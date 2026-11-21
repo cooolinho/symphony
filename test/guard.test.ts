@@ -744,6 +744,16 @@ describe('toolsForRole', () => {
     assert.deepEqual(named(null), ['get_issue']);
   });
 
+  it('offers publish_release only to a role with publishes_releases', () => {
+    const publish: AgentToolSpec = { ...tool('publish_release'), publishesReleases: true };
+    const all = [tool('get_issue'), publish];
+    const withReleaser = setup({ extraRoles: { releaser: { commands: ['release'], states: ['Todo'], publishes_releases: true } } }).params.config.roles ?? [];
+    const of = (name: string | null) => toolsForRole(all, withReleaser.find((r) => r.name === name) ?? null, makeIssue({ id: '1' })).map((t) => t.name);
+    assert.deepEqual(of('releaser'), ['get_issue', 'publish_release']);
+    assert.deepEqual(of('developer'), ['get_issue']);
+    assert.deepEqual(of(null), ['get_issue']);
+  });
+
   it('gives a role with result report_result instead of the status tools', () => {
     const setStatus: AgentToolSpec = { ...tool('set_status'), transitionTarget: (args) => String(args.status) };
     const report: AgentToolSpec = { ...tool('report_result'), transitionTarget: () => null };

@@ -398,6 +398,7 @@ const ROLE_KEYS = new Set([
   'max_sub_issues',
   'sub_issue_status',
   'wait_for_sub_issues',
+  'publishes_releases',
   'agents',
   'claude',
 ]);
@@ -489,6 +490,11 @@ function readRoles(reader: Reader, raw: Record<string, unknown>, activeStates: s
       }
     }
     const readOnly = reader.bool(value, 'read_only', `${field}.read_only`, false);
+    const publishesReleases = reader.bool(value, 'publishes_releases', `${field}.publishes_releases`, false);
+    if (publishesReleases) {
+      if (readOnly) reader.errors.push(`${field}.publishes_releases needs read_only: false (the role commits the version bump)`);
+      if (commands === null) reader.errors.push(`${field}.publishes_releases needs ${field}.commands (only an issue command such as /release starts a release)`);
+    }
     const transitions = readRoleTransitions(reader, value, field, terminalStates);
     if (Object.hasOwn(transitions.onResult, SPLIT_VERDICT) && maxSubIssues === null) {
       reader.errors.push(`${field}.on_result.${SPLIT_VERDICT} needs ${field}.max_sub_issues (the role files the work packages as sub-issues)`);
@@ -510,6 +516,7 @@ function readRoles(reader: Reader, raw: Record<string, unknown>, activeStates: s
       maxSubIssues,
       subIssueStatus,
       waitForSubIssues: reader.bool(value, 'wait_for_sub_issues', `${field}.wait_for_sub_issues`, false),
+      publishesReleases,
       agents: readRoleAgents(reader, value, field),
       brain: reader.oneOf<BrainMode>(value, 'brain', `${field}.brain`, BRAIN_MODES, 'off'),
       brainApprovedWrites: reader.bool(value, 'brain_approved_writes', `${field}.brain_approved_writes`, true),

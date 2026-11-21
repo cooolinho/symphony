@@ -499,7 +499,7 @@ A task that works the same in many repositories does not go into each repository
 instructions live in the skill. Mechanics and selection rules:
 [configuration.md](configuration.md#issue-commands).
 
-Symphony ships five commands:
+Symphony ships these commands:
 
 | Command | Purpose |
 |---|---|
@@ -508,6 +508,8 @@ Symphony ships five commands:
 | `/auto-code [description] [wave=3] [checkpoint=5] [issue-models=auto]` | [Autopilot](#autopilot-auto-code): develops the repository continuously from its project description, in waves of sub-issues that are implemented right away. |
 | `/concept <path> [issue-models=auto]` | [Concept to Backlog](#concept-to-backlog-concept): breaks down a concept (Markdown file) into epics and sub-issues with dependencies, as well as model and effort labels. Everything ends up in the backlog. |
 | `/plan [<path>] [issue-models=auto]` | [List to Backlog](#list-to-backlog-plan): turns every item of a list (a file in the repository, or the issue description itself) into one sub-issue with a detailed implementation plan, dependencies and category, effort and model labels. Everything ends up in the backlog. |
+| `/brain-garden` | Tidies the knowledge vault: duplicates, orphans and broken links become candidate notes. |
+| `/release [vX.Y.Z]` | [Release per issue](#release-per-issue-release): once its *Blocked by* issues or epics are done, turns everything merged since the last tag into a version: bump, merge into the default branch, tag and GitHub release, fully automatic. |
 
 ### How the audit works
 
@@ -828,6 +830,34 @@ The two comment headings are always English, whatever the language of the list, 
 > **Renamed role.** Up to this version the `/auto-code` role was called `planner`. It is now `autopilot`, and its
 > limit is `SYMPHONY_AUTOPILOT_MAX_SUB_ISSUES`. An `.env` that still sets `SYMPHONY_PLANNER_MAX_SUB_ISSUES` now limits
 > `/plan` instead.
+
+## Release per issue (`/release`)
+
+Instead of waiting for a set of epics and cutting the release by hand, put a release issue on the board together with
+them, all in **Ready**:
+
+```
+#200 /release                                  → waits until #181–#189 are done
+     Version after the epics E18–E26.
+     Blocked by #181, #182, #183, #184, #185, #186, #187, #188, #189
+```
+
+1. Symphony does not start #200 while a blocker is open. An epic counts as done once all its sub-issues are closed,
+   even if the epic itself stays open ([dependencies](adapters/github-project.md#dependencies)).
+2. Then the `releaser` (`sonnet`, budget $5) reads what was merged into `SYMPHONY_BASE_BRANCH` since the last `vX.Y.Z`
+   tag, picks the version (`/release v2.3.0` sets it; otherwise MAJOR for breaking changes, MINOR for features, PATCH
+   for the rest), posts a `## Release Plan`, bumps the version files and `CHANGELOG.md` on `release/vX.Y.Z` and opens
+   a pull request into the base branch.
+3. `publish_release` merges that pull request when its checks pass, merges the base branch into the default branch
+   (`Release vX.Y.Z`, merge commit), tags `vX.Y.Z` and creates the GitHub release with the notes. Symphony posts the
+   `## Release Report`, closes #200 and moves it to Done.
+
+Requirements: `SYMPHONY_RELEASE_ENABLED=true` ([configuration](adapters/github-project.md#releases)); a token that may
+merge into the default branch. The bump may only change version files and `CHANGELOG.md`; anything else stops the
+release. If checks are still running after a few attempts, or something fails (red checks, a conflict, the label
+`manual-merge`), the issue goes to **Blocked** with the reason; moving it back to Ready continues where it stopped,
+without a second pull request, tag or release. Releases of several stages are just several release issues, each
+blocked by its epics (and by the previous release issue, so the versions keep their order).
 
 ## Continuations and pausing
 

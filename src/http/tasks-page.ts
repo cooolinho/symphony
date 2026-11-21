@@ -172,9 +172,10 @@ export const TASKS_JS = `
     return groups;
   }
 
-  /** Blockers that are not in a terminal state (an unknown state counts as open). */
+  /** Blockers that are not in a terminal state nor an epic with all sub-issues closed (an unknown state counts as open). */
   function taskOpenBlockers(row, state) {
     const done = ((state.health && state.health.terminal_states) || []).map((s) => String(s).toLowerCase());
+    done.push('sub_issues_closed');
     return (row.blocked_by || []).filter((b) => b && (!b.state || !done.includes(String(b.state).toLowerCase())));
   }
 

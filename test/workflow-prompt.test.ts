@@ -113,6 +113,24 @@ describe('shipped WORKFLOW.md', () => {
     assert.doesNotMatch(await render('issue-analyst'), /## Newest human comments/);
   });
 
+  it('serves /release with the releaser, which may publish releases but never moves an issue to Done', async () => {
+    const { definition } = await loadWorkflowFile(shipped);
+    const config = resolveConfig(definition.config, { workflowPath: shipped, env: { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't' }, trackerDefaults });
+    for (const state of ['Ready', 'In progress']) {
+      assert.equal(roleFor({ state, description: '/release v2.3.0\nAfter the epics E18–E26.\nBlocked by #181' }, config.roles ?? [])?.name, 'releaser');
+    }
+    assert.equal(roleFor({ state: 'Ready', description: 'Release notes for v2' }, config.roles ?? [])?.name, 'issue-analyst');
+    const releaser = (config.roles ?? []).find((role) => role.name === 'releaser');
+    assert.equal(releaser?.publishesReleases, true);
+    assert.equal(releaser?.readOnly, false);
+    assert.ok(!(releaser?.mayMoveTo ?? []).some((column) => column.toLowerCase() === 'done'));
+    const prompt = await render('releaser', null, '/release v2.3.0\nAfter the epics E18–E26.', 'develop');
+    assert.match(prompt, /## Your role: releaser/);
+    assert.match(prompt, /load the skill `symphony:release`/);
+    assert.match(prompt, /The base branch is `develop`/);
+    assert.match(prompt, /publish_release/);
+  });
+
   it('sets brain per role: write, read or off', async () => {
     const { definition } = await loadWorkflowFile(shipped);
     const config = resolveConfig(definition.config, { workflowPath: shipped, env: { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't' }, trackerDefaults });
@@ -120,7 +138,7 @@ describe('shipped WORKFLOW.md', () => {
     assert.deepEqual(modes, {
       'issue-analyst': 'write', architect: 'write', reviewer: 'write',
       developer: 'read', 'test-engineer': 'read', 'security-auditor': 'read',
-      docs: 'off', auditor: 'off', autopilot: 'off', analyst: 'off', planner: 'off', 'brain-gardener': 'write',
+      docs: 'off', auditor: 'off', autopilot: 'off', analyst: 'off', planner: 'off', 'brain-gardener': 'write', releaser: 'off',
     });
   });
 
@@ -1375,6 +1393,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
       analyst: ['explorer', 'laravel-architect'],
       planner: ['explorer', 'laravel-architect'],
       'brain-gardener': [],
+      releaser: [],
     });
     for (const role of config.roles ?? []) {
       assert.ok(Array.isArray(role.agents), `${role.name} has no explicit agents list`);
@@ -1581,6 +1600,7 @@ describe('Symphony toolbox skills', () => {
       ['plan', 'symphony:plan'],
       ['refactor-safely', 'symphony:refactor-safely'],
       ['refactoring', 'symphony:refactoring'],
+      ['release', 'symphony:release'],
     ]);
     const { definition } = await loadWorkflowFile(shipped);
     const roles = definition.config.roles as Record<string, { commands?: string[] }>;

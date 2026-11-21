@@ -89,6 +89,8 @@ How many sub-issues a role may file per run.
 | `SYMPHONY_MERGE_WAIT_FOR_CHECKS` | `true` | Merge gate: wait for pending checks. |
 | `SYMPHONY_MERGE_CHECKS_TIMEOUT_MS` | `3600000` | How long the merge gate waits for them. |
 | `SYMPHONY_MERGE_IGNORE_CHECKS` | – | Checks to disregard, e.g. `acme/app:ci, acme/app:prod-smoke`. |
+| `SYMPHONY_RELEASE_ENABLED` | `false` | `true`: the `/release` role (`releaser`) may publish releases with `publish_release`: it merges its version bump into `SYMPHONY_BASE_BRANCH`, merges that branch into the default branch, tags `vX.Y.Z` and creates the GitHub release. Unlike `SYMPHONY_AUTO_MERGE` this merges into the default branch. See [Releases](adapters/github-project.md#releases). |
+| `SYMPHONY_RELEASE_CHECKS_WAIT_MS` | `240000` | How long one `publish_release` call waits for pending checks before it returns `pending` and the agent calls again. |
 | `SYMPHONY_CHECKS_REPORT_STATUS` | `false` | The final gate before the merge (`checks.on_enter` "In review": the named checks `ci` and `prod-smoke`). `true` reports them as commit statuses `symphony/ci` and `symphony/prod-smoke`; `SYMPHONY_PUBLIC_URL` links them to the dashboard. |
 | `SYMPHONY_CI_TIMEOUT_MS` | `1200000` | Time limit of `ci`, including a wait for its lock; `ci` and `prod-smoke` together must stay below `claude.turn_timeout_ms` (1 h). |
 | `SYMPHONY_SMOKE_TIMEOUT_MS` | `1800000` | Time limit of `prod-smoke`. |

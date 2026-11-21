@@ -32,6 +32,18 @@ tracker:
         timeout_ms: ${SYMPHONY_MERGE_CHECKS_TIMEOUT_MS:-3600000}  # then a human takes over
         ignore: ${SYMPHONY_MERGE_IGNORE_CHECKS:-}                # check names or "owner/repo:name" globs, comma-separated
         max_send_backs: 2                    # send-backs for failing checks per issue; then needs-human
+    release:
+      # true: a role with publishes_releases (roles.releaser, issue command /release) may publish releases with the tool
+      # publish_release: it merges the version-bump pull request into base_branch, base_branch into the default branch
+      # ("Release vX.Y.Z", merge commit), then tags vX.Y.Z and creates the GitHub release. Unlike auto_merge this merges
+      # into the default branch, so it is a separate opt-in. Each pull request's checks must pass; the label
+      # opt_out_label on the release issue or a pull request stops it. Symphony closes the release issue afterwards.
+      enabled: ${SYMPHONY_RELEASE_ENABLED:-false}
+      method: merge                          # gitflow: the default branch keeps the history of base_branch
+      done_state: Done
+      checks:
+        wait_ms: ${SYMPHONY_RELEASE_CHECKS_WAIT_MS:-240000}  # per publish_release call; the agent calls again while pending
+        ignore: ${SYMPHONY_MERGE_IGNORE_CHECKS:-}
   # Board columns: Backlog | Ready | Design | In progress | Testing | Documentation | Agent review | Security review | Blocked | In review | Done
   #   Ready              -> issue analyst (read-only) works out requirements, risks, refined acceptance criteria, type and
   #                         complexity before anything is implemented; later stages get the analysis in their prompt
@@ -66,7 +78,7 @@ tracker:
   #                         between Agent review and In review (docs/configuration.md#the-security-auditor).
   #   In review          -> human review; only the reviewer moves issues here, after checks pass (ends the run)
   #   Blocked            -> an agent needs a human (ends the run, keeps the workspace)
-  #   Done               -> set by a human only; agent stops and its workspace is deleted
+  #   Done               -> set by a human (or by Symphony: auto_merge, a published release); agent stops and its workspace is deleted
   #   Backlog            -> ignored until someone moves the issue to Ready; also where sub-issues made by the auditor land
   #   An issue whose description starts with "/refactoring" is served by the auditor instead of the developer
   #   (roles.auditor.commands): it analyses read-only and files sub-issues. Skills in .claude/skills/ define the commands.
@@ -78,6 +90,9 @@ tracker:
   #   orphans and broken links in the knowledge vault and writes proposals as candidate notes (it never promotes).
   #   An issue whose description starts with "/plan [file]" is served by the planner: every item of the list (the file,
   #   or the description below the command line) becomes one planned sub-issue in Backlog; a human moves them to Ready.
+  #   An issue whose description starts with "/release [vX.Y.Z]" is served by the releaser: once its "blocked by" issues
+  #   (or epics whose sub-issues are all closed) are done, it bumps the version files and CHANGELOG.md, and publish_release
+  #   merges into the default branch, tags and releases (needs tracker.provider.release.enabled). Symphony closes it.
   # If your board names its columns differently, adjust these lists, roles, checks, the prompt below and the role
   # prompts it includes from roles/<role>.md.
   active_states: [Ready, Design, In progress, Testing, Documentation, Agent review, Security review]
@@ -354,6 +369,16 @@ roles:
     brain_approved_writes: false                            # never writes an approved note, never sets status approved
     agents: []                                              # works on the vault, no laravel-* personas
     claude: { model: opus, max_budget_usd: 5, disallowed_tools: [mcp__tracker__open_pull_request] }
+  releaser:
+    commands: [release]                                     # served only for issues whose description starts with /release
+    states: [Ready, In progress]
+    read_only: false                                        # commits the version bump (version files and CHANGELOG.md only)
+    run_checks: false                                       # publish_release waits for the pull requests' checks instead
+    publishes_releases: true                                # grants publish_release (with tracker.provider.release.enabled)
+    max_turns: 3
+    may_move_to: [In progress, Blocked]                     # Symphony moves the issue to Done once the release is out
+    agents: []                                              # finds the version files with a few searches itself
+    claude: { model: sonnet, effort: medium, max_budget_usd: 5 }
 
 pipeline:
   # A third review with changes_needed does not go back to the developer: the issue moves to Blocked with the
@@ -627,5 +652,6 @@ The description starts with the command `/{{ issue.command.name }}`{% if issue.c
 {%- when "analyst" %}{% include "roles/analyst.md" %}
 {%- when "planner" %}{% include "roles/planner.md" %}
 {%- when "brain-gardener" %}{% include "roles/brain-gardener.md" %}
+{%- when "releaser" %}{% include "roles/releaser.md" %}
 {%- else %}{% include "roles/default.md" %}
 {%- endcase %}

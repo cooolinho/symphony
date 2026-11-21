@@ -91,6 +91,29 @@ export interface MergeCheckSettings {
 
 export const DEFAULT_MERGE_CHECKS: MergeCheckSettings = { wait: true, timeoutMs: 3_600_000, ignore: [], maxSendBacks: 2 };
 
+/**
+ * `release`: the opt-in for the `publish_release` tool of a role with `publishes_releases`. Unlike `auto_merge`, it
+ * merges into the repository's default branch (base branch -> default branch) and tags a GitHub release.
+ */
+export interface ReleaseSettings {
+  /** Merge method of the version-bump pull request and of the release pull request (gitflow: a merge commit). */
+  method: (typeof MERGE_METHODS)[keyof typeof MERGE_METHODS];
+  /** How long one `publish_release` call waits for pending checks in total before it returns `pending` (keep it below the tool timeout). */
+  waitMs: number;
+  /** How often it reads the checks again while they are pending. */
+  pollMs: number;
+  /** Check names (or `owner/repo:name`) the release gate disregards; globs, matched case-insensitively. */
+  ignore: string[];
+  /** Label on the release issue or a pull request that stops the release before anything reaches the default branch. */
+  optOutLabel: string;
+  /** Column the release issue moves to once the release is published (Symphony closes it; agents never move there). */
+  doneState: string;
+}
+
+export const DEFAULT_RELEASE_WAIT_MS = 240_000;
+export const DEFAULT_RELEASE_POLL_MS = 20_000;
+export const DEFAULT_RELEASE_DONE_STATE = 'Done';
+
 export interface GithubProjectSettings {
   owner: string;
   projectNumber: number;
@@ -111,6 +134,8 @@ export interface GithubProjectSettings {
   baseBranch: string | null;
   /** null = never merge (a human does). */
   autoMerge: AutoMergeSettings | null;
+  /** null = no role may publish a release (`publish_release` refuses). */
+  release: ReleaseSettings | null;
   requestTimeoutMs: number;
   requestRetries: number;
 }
@@ -245,6 +270,7 @@ export function parseSettings(provider: Record<string, unknown>, env: NodeJS.Pro
   const subIssueStatus = text(read(provider, 'sub_issue_status', env).value) ?? DEFAULT_SUB_ISSUE_STATUS;
   const baseBranch = text(read(provider, 'base_branch', env).value);
   const autoMerge = parseAutoMerge(provider.auto_merge, env, baseBranch, errors);
+  const release = parseRelease(provider.release, env, errors);
 
   let requestTimeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS;
   const timeout = text(read(provider, 'request_timeout_ms', env).value);
@@ -278,6 +304,7 @@ export function parseSettings(provider: Record<string, unknown>, env: NodeJS.Pro
       subIssueStatus,
       baseBranch,
       autoMerge,
+      release,
       requestTimeoutMs,
       requestRetries,
     },
@@ -305,7 +332,8 @@ function parseAutoMerge(raw: unknown, env: NodeJS.ProcessEnv, baseBranch: string
     errors.push('tracker.provider.auto_merge.enabled must be true or false');
     return null;
   }
-  // Merging into the default branch stays a human decision: auto_merge only serves a separate integration branch.
+  // Merging into the default branch stays a human decision for auto_merge: it only serves a separate integration branch.
+  // Releases into the default branch have their own opt-in (`release`, see parseRelease).
   if (baseBranch === null) errors.push('tracker.provider.auto_merge needs tracker.provider.base_branch (it never merges into the default branch)');
   const onEnter = text(field('on_enter').value);
   if (onEnter === null) errors.push('tracker.provider.auto_merge.on_enter is required (the column that triggers the merge, e.g. "In review")');
@@ -323,6 +351,92 @@ function parseAutoMerge(raw: unknown, env: NodeJS.ProcessEnv, baseBranch: string
     onChecksFailed: text(field('on_checks_failed').value),
     checks,
   };
+}
+
+/** `release` (a map); null when it is omitted or not enabled. Problems go to `errors`. */
+function parseRelease(raw: unknown, env: NodeJS.ProcessEnv, errors: string[]): ReleaseSettings | null {
+  if (raw === undefined || raw === null) return null;
+  const prefix = 'tracker.provider.release';
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    errors.push(`${prefix} must be a map`);
+    return null;
+  }
+  const section = raw as Record<string, unknown>;
+  const known = new Set(['enabled', 'method', 'opt_out_label', 'done_state', 'checks']);
+  for (const key of Object.keys(section)) {
+    if (!known.has(key)) errors.push(`${prefix}.${key} is not a known key (allowed: ${[...known].join(', ')})`);
+  }
+  const enabled = read(section, 'enabled', env).value;
+  if (enabled === undefined || enabled === null || enabled === false || enabled === 'false' || enabled === '') return null;
+  if (enabled !== true && enabled !== 'true') {
+    errors.push(`${prefix}.enabled must be true or false`);
+    return null;
+  }
+  const before = errors.length;
+  const methodName = (text(read(section, 'method', env).value) ?? 'merge').toLowerCase();
+  const method = MERGE_METHODS[methodName as keyof typeof MERGE_METHODS];
+  if (method === undefined) errors.push(`${prefix}.method must be squash, merge or rebase (got ${JSON.stringify(methodName)})`);
+  const result: ReleaseSettings = {
+    method: method ?? MERGE_METHODS.merge,
+    waitMs: DEFAULT_RELEASE_WAIT_MS,
+    pollMs: DEFAULT_RELEASE_POLL_MS,
+    ignore: [],
+    optOutLabel: text(read(section, 'opt_out_label', env).value) ?? DEFAULT_OPT_OUT_LABEL,
+    doneState: text(read(section, 'done_state', env).value) ?? DEFAULT_RELEASE_DONE_STATE,
+  };
+  const checks = section.checks;
+  if (checks !== undefined && checks !== null) {
+    if (typeof checks !== 'object' || Array.isArray(checks)) {
+      errors.push(`${prefix}.checks must be a map`);
+    } else {
+      const checkSection = checks as Record<string, unknown>;
+      const knownChecks = new Set(['wait_ms', 'poll_ms', 'ignore']);
+      for (const key of Object.keys(checkSection)) {
+        if (!knownChecks.has(key)) errors.push(`${prefix}.checks.${key} is not a known key (allowed: ${[...knownChecks].join(', ')})`);
+      }
+      const integer = (key: string, min: number): number | null => {
+        const value = text(read(checkSection, key, env).value);
+        if (value === null) return null;
+        const parsed = Number(value);
+        if (!/^\d+$/.test(value) || !Number.isSafeInteger(parsed) || parsed < min) {
+          errors.push(`${prefix}.checks.${key} must be an integer >= ${min}`);
+          return null;
+        }
+        return parsed;
+      };
+      result.waitMs = integer('wait_ms', 0) ?? result.waitMs;
+      result.pollMs = integer('poll_ms', 1000) ?? result.pollMs;
+      result.ignore = parseGlobList(read(checkSection, 'ignore', env).value, env, `${prefix}.checks.ignore`, errors);
+    }
+  }
+  return errors.length > before ? null : result;
+}
+
+/** A list of globs, or a comma/space separated string (so `$VAR` works); invalid entries go to `errors`. */
+function parseGlobList(value: unknown, env: NodeJS.ProcessEnv, path: string, errors: string[]): string[] {
+  const entries = Array.isArray(value)
+    ? value.map((entry) => resolveEnvReference(entry, env))
+    : typeof value === 'string'
+      ? splitRepositoryList(value)
+      : value === undefined || value === null
+        ? []
+        : null;
+  if (entries === null || entries.some((entry) => typeof entry !== 'string')) {
+    errors.push(`${path} must be a list of check names or globs (e.g. "owner/repo:ci")`);
+    return [];
+  }
+  const globs: string[] = [];
+  for (const entry of entries as string[]) {
+    const glob = entry.trim();
+    if (glob === '') continue;
+    try {
+      compileGlob(glob);
+      globs.push(glob);
+    } catch (error) {
+      errors.push(`${path}: ${JSON.stringify(glob)} is not a valid glob (${error instanceof Error ? error.message : String(error)})`);
+    }
+  }
+  return globs;
 }
 
 /** `auto_merge.checks` (a map; omitted = the defaults); null after an error, which goes to `errors`. */
@@ -359,29 +473,7 @@ function parseMergeChecks(raw: unknown, env: NodeJS.ProcessEnv, errors: string[]
   result.timeoutMs = integer('timeout_ms', 1) ?? result.timeoutMs;
   result.maxSendBacks = integer('max_send_backs', 0) ?? result.maxSendBacks;
 
-  // A list, or a comma/space separated string (so `$VAR` works).
-  const ignore = read(section, 'ignore', env).value;
-  const entries = Array.isArray(ignore)
-    ? ignore.map((entry) => resolveEnvReference(entry, env))
-    : typeof ignore === 'string'
-      ? splitRepositoryList(ignore)
-      : ignore === undefined || ignore === null
-        ? []
-        : null;
-  if (entries === null || entries.some((entry) => typeof entry !== 'string')) {
-    errors.push(`${prefix}.ignore must be a list of check names or globs (e.g. "owner/repo:ci")`);
-  } else {
-    for (const entry of entries as string[]) {
-      const glob = entry.trim();
-      if (glob === '') continue;
-      try {
-        compileGlob(glob);
-        result.ignore.push(glob);
-      } catch (error) {
-        errors.push(`${prefix}.ignore: ${JSON.stringify(glob)} is not a valid glob (${error instanceof Error ? error.message : String(error)})`);
-      }
-    }
-  }
+  result.ignore = parseGlobList(read(section, 'ignore', env).value, env, `${prefix}.ignore`, errors);
   return errors.length > before ? null : result;
 }
 

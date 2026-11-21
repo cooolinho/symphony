@@ -58,6 +58,17 @@ the release's version.
 | New feature, new option, new check | `MINOR` |
 | Bug fix, documentation, internal change | `PATCH` |
 
+### Automatic releases with `/release`
+
+In the repositories Symphony works on, these steps can run without a human: an issue starting with `/release` (or
+`/release vX.Y.Z`) and *Blocked by* the epics or issues of the release waits on the board until they are done; the
+`releaser` then bumps the version on `release/vX.Y.Z`, and `publish_release` merges the bump into `develop`, merges
+`develop` into `main` with a merge commit (`Release vX.Y.Z`), tags the merge commit and creates the GitHub release.
+It needs `SYMPHONY_RELEASE_ENABLED=true`, since it is the one path that merges into `main` without a maintainer; the
+label `manual-merge` on the release issue stops it before `main`. See
+[usage.md](usage.md#release-per-issue-release) and [github-project.md](adapters/github-project.md#releases). Symphony's
+own releases stay manual (steps 1–5 above), because step 5 restarts the instance that would run the release.
+
 ## Hotfixes
 
 For an urgent fix to a released version, branch `hotfix/<topic>` from `main`, open the pull request against `main`,

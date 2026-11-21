@@ -104,6 +104,8 @@ export interface AgentToolSpec {
    * it may split (see `toolsForRole`).
    */
   createsSubIssues?: boolean;
+  /** The tool merges into the default branch and tags a release; only roles with `publishes_releases` get it. */
+  publishesReleases?: boolean;
   /**
    * For tools that move the issue to another column: the target column named by `args`, or null when the call does
    * not change the column. Symphony's transition guard checks such calls before `execute` runs. May be asynchronous when
