@@ -137,6 +137,10 @@ agent:
     developer: 1
     reviewer: 1
   max_retry_backoff_ms: 600000
+  # Which issues get free slots first. priority: priority, then the oldest issue. column_first: the rightmost
+  # column of tracker.active_states first (Security review, Agent review, ... before Ready), then priority and age inside
+  # a column, so issues close to done finish before new ones start. Column limits and reservations stay as they are.
+  dispatch_order: ${SYMPHONY_DISPATCH_ORDER:-priority}
 
 claude:
   # Default model, e.g. fable, opus or sonnet; unset = Claude Code default. Roles with their own model use theirs (below:

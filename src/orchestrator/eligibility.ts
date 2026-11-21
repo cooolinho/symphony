@@ -1,5 +1,5 @@
 import type { Issue, TrackerAdapter } from '../tracker/types.ts';
-import { normalizeStateName, type AgentConfig, type TrackerConfig } from '../workflow/config.ts';
+import { normalizeStateName, type AgentConfig, type DispatchOrder, type TrackerConfig } from '../workflow/config.ts';
 import type { RoleConfig } from '../workflow/roles.ts';
 import { subIssueLimit } from './work-packages.ts';
 
@@ -94,9 +94,43 @@ function priorityRank(priority: number | null): number {
   return priority !== null && Number.isInteger(priority) && priority >= 1 && priority <= 4 ? priority : Number.POSITIVE_INFINITY;
 }
 
-/** Priority 1..4 first (others and null after), then oldest created_at (null last), then identifier. */
-export function sortForDispatch<T extends Pick<Issue, 'priority' | 'created_at' | 'identifier'>>(issues: readonly T[]): T[] {
+/** How `sortForDispatch` orders issues (`agent.dispatch_order`). */
+export interface DispatchOrderOptions {
+  order?: DispatchOrder;
+  /** `tracker.active_states` in board order; read by `column_first` only. */
+  activeStates?: readonly string[];
+}
+
+/**
+ * Position of a state in `activeStates` (normalized); -1 for a state not listed there, so it sorts after every listed
+ * column when the rightmost column goes first.
+ */
+function columnRank(state: string, activeStates: readonly string[]): number {
+  const normalized = normalizeStateName(state);
+  return activeStates.findIndex((active) => normalizeStateName(active) === normalized);
+}
+
+/**
+ * Priority 1..4 first (others and null after), then oldest created_at (null last), then identifier. With
+ * `order: 'column_first'` the board column comes before all of that: the rightmost column of `activeStates` first, so
+ * issues close to done get free slots before new ones.
+ */
+export function sortForDispatch<T extends Pick<Issue, 'priority' | 'created_at' | 'identifier' | 'state'>>(
+  issues: readonly T[],
+  options: DispatchOrderOptions = {},
+): T[] {
+  const activeStates = options.order === 'column_first' ? (options.activeStates ?? []) : [];
+  const rank = new Map<string, number>();
+  const rankOf = (state: string): number => {
+    let value = rank.get(state);
+    if (value === undefined) rank.set(state, (value = columnRank(state, activeStates)));
+    return value;
+  };
   return [...issues].sort((a, b) => {
+    if (activeStates.length > 0) {
+      const byColumn = rankOf(b.state) - rankOf(a.state);
+      if (byColumn !== 0) return byColumn;
+    }
     const byPriority = priorityRank(a.priority) - priorityRank(b.priority);
     if (byPriority !== 0 && !Number.isNaN(byPriority)) return byPriority;
     const aCreated = a.created_at?.getTime() ?? Number.POSITIVE_INFINITY;

@@ -59,8 +59,17 @@ export interface EntryCheck {
 /** Names of entry checks: they become commit status contexts (`symphony/<name>`). */
 const CHECK_NAME = /^[a-z0-9][a-z0-9._-]{0,49}$/;
 
+/** Order of issues competing for free slots (`agent.dispatch_order`). */
+export type DispatchOrder = 'priority' | 'column_first';
+export const DISPATCH_ORDERS: readonly DispatchOrder[] = ['priority', 'column_first'];
+
 export interface AgentConfig {
   maxConcurrentAgents: number;
+  /**
+   * `priority`: priority, then age, then identifier. `column_first`: the rightmost column of `tracker.active_states`
+   * first, then the same order inside a column.
+   */
+  dispatchOrder: DispatchOrder;
   maxTurns: number;
   maxRetryBackoffMs: number;
   /**
@@ -1161,6 +1170,7 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
     maxConcurrentAgents: reader.int(agentRaw, 'max_concurrent_agents', 'agent.max_concurrent_agents', DEFAULTS.maxConcurrentAgents, 0),
     maxTurns: reader.int(agentRaw, 'max_turns', 'agent.max_turns', DEFAULTS.maxTurns, 1),
     maxRetryBackoffMs: reader.int(agentRaw, 'max_retry_backoff_ms', 'agent.max_retry_backoff_ms', DEFAULTS.maxRetryBackoffMs, 1),
+    dispatchOrder: reader.oneOf(agentRaw, 'dispatch_order', 'agent.dispatch_order', DISPATCH_ORDERS, 'priority'),
     maxConcurrentAgentsByState: byState,
     reservedSlotsByRole: reserved,
     maxContinuations:

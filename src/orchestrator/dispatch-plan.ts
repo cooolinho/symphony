@@ -138,7 +138,7 @@ function waitingRetryReason(retry: PlanRetry): PlanReason {
  * The tick, the retry timers, --dry-run and the dashboard all read this one function.
  *
  * Order rule: work in flight first (continuations, then due retries), then new candidates; each group by
- * `sortForDispatch`. A continuation keeps the slot its session left, so no new candidate takes it in the gap.
+ * `sortForDispatch` (with `agent.dispatch_order: column_first` the rightmost board column first). A continuation keeps the slot its session left, so no new candidate takes it in the gap.
  * Slots are handed out walking that order; an issue that waits for a hold, a column limit or sub-issues takes none.
  * Reserved slots (`agent.reserved_slots_by_role`) stay free for their role: an issue of role R starts only while the
  * free slots exceed the unused reservations of the other roles.
@@ -155,6 +155,7 @@ export function planDispatch(input: PlanInput): PlanItem[] {
     if (entry.role !== undefined) byRole.set(entry.role, (byRole.get(entry.role) ?? 0) + 1);
   }
   const reserved = activeReservations(config.agent);
+  const order = { order: config.agent.dispatchOrder, activeStates: config.tracker.activeStates };
   const holdOf = (issue: PlanIssue): { model: string; until: Date | null } | null => {
     const family = modelFamilyOf(plannedModel(issue, config));
     const hold = family === null ? undefined : input.holds.get(family);
@@ -204,7 +205,7 @@ export function planDispatch(input: PlanInput): PlanItem[] {
   // Up next, in flight first: continuations, then due retries.
   const due = input.retries.filter((retry) => retry.due && active(retry));
   const byIssue = new Map(due.map((retry) => [retry.issue.id, retry]));
-  const inFlight = sortForDispatch(due.map((retry) => retry.issue)).sort(
+  const inFlight = sortForDispatch(due.map((retry) => retry.issue), order).sort(
     (a, b) => retryKindRank(byIssue.get(a.id) as PlanRetry) - retryKindRank(byIssue.get(b.id) as PlanRetry),
   );
   for (const issue of inFlight) {
@@ -222,7 +223,7 @@ export function planDispatch(input: PlanInput): PlanItem[] {
 
   // Then new candidates. Not dispatchable or without a required label: blocked until the board changes.
   const blocked: PlanItem[] = [];
-  for (const issue of sortForDispatch(input.candidates)) {
+  for (const issue of sortForDispatch(input.candidates, order)) {
     if (!hasRequiredFields(issue) || !isActiveState(issue.state, config.tracker)) continue;
     if (!issue.dispatchable) {
       const note = issue.native_ref?.dispatch_note;
