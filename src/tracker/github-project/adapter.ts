@@ -30,6 +30,7 @@ import { autoMerge, CHECKS_FAILED_MARKER, type MergeOptions } from './merge.ts';
 import {
   NO_STATUS,
   applyDispatchRules,
+  blockerState,
   inRepositoryScope,
   isHeldBySubIssues,
   issueRefOf,
@@ -46,6 +47,7 @@ import {
   ADD_COMMENT_MUTATION,
   ADD_LABELS_MUTATION,
   BRANCH_PULL_REQUEST_QUERY,
+  CLOSE_ISSUE_MUTATION,
   CREATE_LABEL_MUTATION,
   ISSUE_ATTACHMENTS_QUERY,
   ISSUE_PARENT_QUERY,
@@ -61,6 +63,7 @@ import {
 } from './queries.ts';
 import { KIND, type GithubProjectSettings } from './settings.ts';
 import { actionsJobOf, withJobLogs } from './job-logs.ts';
+import { publishRelease, releaseReport, type ReleaseRequest, type ReleaseResult } from './release.ts';
 import { postCommitStatus } from './statuses.ts';
 import { createGithubTools } from './tools.ts';
 
@@ -284,7 +287,7 @@ export class GithubProjectAdapter implements TrackerAdapter {
       for (const [index, reference] of batch.entries()) {
         const target = obj(obj(obj(response.data)?.[`ref${index}`])?.issueOrPullRequest);
         if (target !== null && typeof target.state === 'string') {
-          resolved.set(key(reference.repository, reference.number), { id: typeof target.id === 'string' ? target.id : null, state: target.state });
+          resolved.set(key(reference.repository, reference.number), { id: typeof target.id === 'string' ? target.id : null, state: blockerState(target) });
         } else {
           this.#logger.debug('ignoring unresolvable "blocked by" reference', { reference: `${reference.repository}#${reference.number}` });
         }
@@ -506,6 +509,50 @@ export class GithubProjectAdapter implements TrackerAdapter {
     // The guard ran the entry checks before this call: the change is reviewed and green, so it can be merged.
     const result = await this.#merge(issue, ref, moved, { checkedSha: options.checkedSha ?? null });
     return { previous: issue.state, status: result.status, autoMerge: result };
+  }
+
+  /**
+   * `publish_release` with the adapter's token and settings; throws without `tracker.provider.release`. Once the release
+   * is published, Symphony posts the report on the release issue, closes it and moves it to `release.done_state`: the
+   * agent never moves an issue to a terminal column itself.
+   */
+  async publishRelease(issue: Issue, request: ReleaseRequest): Promise<ReleaseResult> {
+    const settings = this.settings.release;
+    if (settings === null) {
+      throw new TrackerError('invalid_tracker_config', 'releases are off: set tracker.provider.release.enabled (SYMPHONY_RELEASE_ENABLED=true) to let a role publish them');
+    }
+    const ref = this.#requireRef(issue, 'release');
+    const result = await publishRelease(
+      {
+        client: this.client,
+        settings,
+        baseBranch: this.settings.baseBranch,
+        rest: { fetch: (...args) => this.#fetch(...args), endpoint: this.settings.endpoint, token: this.settings.token, timeoutMs: this.settings.requestTimeoutMs },
+      },
+      request,
+    );
+    if (result.status !== 'published') return result;
+    const warnings: string[] = [];
+    let status = issue.state;
+    try {
+      await this.postComment(issue, releaseReport(result, request));
+    } catch (error) {
+      warnings.push(`could not post the release report: ${errorMessage(error)}`);
+    }
+    try {
+      const closed = await this.client.request<Json>(CLOSE_ISSUE_MUTATION, { issueId: ref.issueId });
+      assertNoGraphqlErrors(closed.errors);
+    } catch (error) {
+      warnings.push(`could not close the release issue: ${errorMessage(error)}`);
+    }
+    try {
+      const next = await this.statusOption(settings.doneState);
+      if (next.option === undefined) throw new Error(`board column "${settings.doneState}" does not exist`);
+      status = await this.#moveTo(ref, next.meta, next.option);
+    } catch (error) {
+      warnings.push(`could not move the release issue to "${settings.doneState}": ${errorMessage(error)}`);
+    }
+    return { ...result, issue_status: status, ...(warnings.length > 0 ? { warnings } : {}) };
   }
 
   async reportCheckStatus(issue: Issue, status: CheckStatus): Promise<void> {

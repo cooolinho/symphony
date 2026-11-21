@@ -47,7 +47,7 @@ Stufen, die ein Issue nicht braucht, werden ohne Session übersprungen. Einstell
 - **Checks und Merge-Gate:** Lint, Analyse und Tests vor jeder Übergabe; die CI des Repositorys vor dem Merge
   ([Merge-Gate](docs/adapters/github-project.md#merge-gate))
 - **Modell und Effort pro Issue** per Label (`Model: opus`, `Effort: high`) ([Nutzung](docs/usage.md#choosing-the-model-per-issue))
-- **Issue-Befehle** wie `/plan`, `/concept`, `/refactoring` und der `/auto-code`-Autopilot ([Nutzung](docs/usage.md))
+- **Issue-Befehle** wie `/plan`, `/concept`, `/refactoring`, der `/auto-code`-Autopilot und `/release`, das aus fertigen Epics eine Version mit Tag und GitHub-Release macht ([Nutzung](docs/usage.md#release-per-issue-release))
 - **Live-Dashboard** mit Team-Ansicht, Änderungs-Feed, Statistik und JSON-API ([Dashboard](docs/usage.md#dashboard-and-api))
 - **Wissens-Vault (Brain)**, den die Agenten teilen und du prüfst, auch in Obsidian ([Brain](docs/brain.md))
 - **Laravel Boost** und eine Datenbank pro Workspace für Laravel-Apps ([Laravel](docs/laravel-repositories.md))

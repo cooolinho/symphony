@@ -73,8 +73,23 @@ export type NormalizeOutcome =
   | { kind: 'invisible'; reason: string }
   | { kind: 'malformed'; reason: string };
 
-/** Blocker states that no longer block: closed issues, closed or merged pull requests. */
-export const RESOLVED_STATES = new Set(['CLOSED', 'MERGED']);
+/**
+ * State of an open blocker whose sub-issues are all closed: an epic is done once its issues are, even when nobody closes
+ * the epic itself (GitHub never closes a parent issue on its own).
+ */
+export const SUB_ISSUES_CLOSED = 'SUB_ISSUES_CLOSED';
+
+/** Blocker states that no longer block: closed issues, closed or merged pull requests, epics with all sub-issues closed. */
+export const RESOLVED_STATES = new Set(['CLOSED', 'MERGED', SUB_ISSUES_CLOSED]);
+
+/** The blocker's state, `SUB_ISSUES_CLOSED` for an open issue with sub-issues that are all closed (`subIssuesSummary`). */
+export function blockerState(node: { state?: unknown; subIssuesSummary?: unknown }): string | null {
+  const state = typeof node.state === 'string' && node.state !== '' ? node.state : null;
+  const summary = node.subIssuesSummary;
+  if (state !== 'OPEN' || typeof summary !== 'object' || summary === null) return state;
+  const { total, completed } = summary as { total?: unknown; completed?: unknown };
+  return typeof total === 'number' && total > 0 && completed === total ? SUB_ISSUES_CLOSED : state;
+}
 
 const REFERENCE = '(?:[A-Za-z0-9-]+\\/[A-Za-z0-9._-]+)?#\\d+';
 const TEXT_BLOCKER = new RegExp(
@@ -233,7 +248,7 @@ export function normalizeItemNode(
     return {
       id: str(b.id),
       identifier: repo !== null && blockerNumber !== null ? `${repo}#${blockerNumber}` : null,
-      state: str(b.state),
+      state: blockerState(b),
     };
   });
 

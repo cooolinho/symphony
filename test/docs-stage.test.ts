@@ -90,6 +90,7 @@ function role(overrides: Partial<RoleConfig> & Pick<RoleConfig, 'name' | 'states
     maxSubIssues: null,
     subIssueStatus: null,
     waitForSubIssues: false,
+    publishesReleases: false,
     agents: null,
     brain: 'off',
     brainApprovedWrites: true,

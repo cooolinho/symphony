@@ -23,7 +23,7 @@ const STATUS_OPTIONS = [
   { id: 'o4', name: 'Done' },
 ];
 
-function itemNode(id: string, options: { status?: string | null; repo?: string; number?: number; title?: string; state?: string; labels?: string[]; assignees?: string[]; blockedBy?: Array<{ state: string; number?: number }>; project?: string; type?: string; body?: string; parent?: { number: number; title: string; state: string }; subIssues?: Array<{ number: number; state: string; stateReason?: string }> } = {}): Json {
+function itemNode(id: string, options: { status?: string | null; repo?: string; number?: number; title?: string; state?: string; labels?: string[]; assignees?: string[]; blockedBy?: Array<{ state: string; number?: number; subIssues?: { total: number; completed: number } }>; project?: string; type?: string; body?: string; parent?: { number: number; title: string; state: string }; subIssues?: Array<{ number: number; state: string; stateReason?: string }> } = {}): Json {
   const status = options.status === undefined ? 'Todo' : options.status;
   const option = STATUS_OPTIONS.find((o) => o.name === status);
   return {
@@ -49,7 +49,7 @@ function itemNode(id: string, options: { status?: string | null; repo?: string; 
             labels: { nodes: (options.labels ?? []).map((name) => ({ name })) },
             assignees: { nodes: (options.assignees ?? []).map((login) => ({ login })) },
             linkedBranches: { nodes: [] },
-            blockedBy: { nodes: (options.blockedBy ?? []).map((b, i) => ({ id: `B${i}`, number: b.number ?? 90 + i, state: b.state, repository: { nameWithOwner: 'acme/app' } })) },
+            blockedBy: { nodes: (options.blockedBy ?? []).map((b, i) => ({ id: `B${i}`, number: b.number ?? 90 + i, state: b.state, repository: { nameWithOwner: 'acme/app' }, ...(b.subIssues !== undefined ? { subIssuesSummary: b.subIssues } : {}) })) },
             parent: options.parent ? { ...options.parent, repository: { nameWithOwner: 'acme/app' } } : null,
             subIssues: { nodes: (options.subIssues ?? []).map((sub) => ({ ...sub, title: `Sub ${sub.number}`, repository: { nameWithOwner: 'acme/app' } })) },
           },
@@ -375,6 +375,20 @@ describe('github_project adapter reads', () => {
     const assigned = await byId({ assignee: 'me' });
     assert.equal(assigned.get('mine'), true);
     assert.equal(assigned.get('open'), false);
+  });
+
+  it('counts an open blocker whose sub-issues are all closed (an epic) as done', async () => {
+    const github = new FakeGithub().add(
+      itemNode('epic-done', { number: 1, blockedBy: [{ state: 'OPEN', subIssues: { total: 3, completed: 3 } }] }),
+      itemNode('epic-open', { number: 2, blockedBy: [{ state: 'OPEN', subIssues: { total: 3, completed: 2 } }] }),
+      itemNode('no-subs', { number: 3, blockedBy: [{ state: 'OPEN', subIssues: { total: 0, completed: 0 } }] }),
+    );
+    const issues = new Map((await adapter(github).fetchIssuesByStates(['Todo'])).map((i) => [i.id, i]));
+    assert.equal(issues.get('epic-done')?.dispatchable, true);
+    assert.equal(issues.get('epic-done')?.blocked_by[0]?.state, 'SUB_ISSUES_CLOSED');
+    assert.equal(issues.get('epic-open')?.dispatchable, false);
+    assert.equal(issues.get('epic-open')?.blocked_by[0]?.state, 'OPEN');
+    assert.equal(issues.get('no-subs')?.dispatchable, false);
   });
 
   it('omits unknown ids and items of other projects, and fails on malformed requested items', async () => {

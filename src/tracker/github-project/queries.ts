@@ -81,7 +81,7 @@ export const ITEM_DETAILS_QUERY = /* GraphQL */ `
             labels(first: 100) { nodes { name } }
             assignees(first: 20) { nodes { login } }
             linkedBranches(first: 1) { nodes { ref { name } } }
-            blockedBy(first: 50) { nodes { id number state repository { nameWithOwner } } }
+            blockedBy(first: 50) { nodes { id number state repository { nameWithOwner } subIssuesSummary { total completed } } }
             parent { number title state repository { nameWithOwner } }
             subIssues(first: 100) { nodes { number title state stateReason repository { nameWithOwner } } }
           }
@@ -110,7 +110,7 @@ export function referenceStatesQuery(references: Array<{ repository: string; num
     params.push(`$o${index}: String!`, `$n${index}: String!`);
     fields.push(
       `ref${index}: repository(owner: $o${index}, name: $n${index}) { issueOrPullRequest(number: ${reference.number}) { ` +
-        '__typename ... on Issue { id number state } ... on PullRequest { id number state } } }',
+        '__typename ... on Issue { id number state subIssuesSummary { total completed } } ... on PullRequest { id number state } } }',
     );
   });
   return { query: `query SymphonyReferences(${params.join(', ')}) {\n  ${fields.join('\n  ')}\n}`, variables };
@@ -403,6 +403,50 @@ export const ISSUE_PARENT_QUERY = /* GraphQL */ `
     node(id: $issueId) {
       ... on Issue {
         parent { id number title repository { nameWithOwner } }
+      }
+    }
+  }
+`;
+
+/**
+ * What `publish_release` checks first: the default branch, the release issue's labels, whether the tag or its GitHub
+ * release exist, and the newest tags (the highest version among them is the last release).
+ */
+export const RELEASE_REPOSITORY_QUERY = /* GraphQL */ `
+  query SymphonyReleaseRepository($owner: String!, $name: String!, $issue: Int!, $tag: String!, $qualifiedTag: String!) {
+    repository(owner: $owner, name: $name) {
+      id
+      defaultBranchRef { name }
+      issue(number: $issue) { labels(first: 50) { nodes { name } } }
+      release(tagName: $tag) { url }
+      ref(qualifiedName: $qualifiedTag) { name }
+      refs(refPrefix: "refs/tags/", first: 100, orderBy: { field: TAG_COMMIT_DATE, direction: DESC }) { nodes { name } }
+    }
+  }
+`;
+
+/** One pull request of a release: state, branches, changed files and the checks of its head. */
+export const RELEASE_PULL_REQUEST_QUERY = /* GraphQL */ `
+  query SymphonyReleasePullRequest($owner: String!, $name: String!, $number: Int!) {
+    repository(owner: $owner, name: $name) {
+      pullRequest(number: $number) {
+        id number url title state merged isDraft baseRefName headRefName headRefOid mergeable
+        mergeCommit { oid }
+        labels(first: 50) { nodes { name } }
+        files(first: 100) { totalCount nodes { path } }
+        ${CHECK_ROLLUP_FIELDS}
+      }
+    }
+  }
+`;
+
+/** Pull requests from the base branch into the default branch: an open one, and the recently merged ones. */
+export const RELEASE_BRANCH_PULL_REQUESTS_QUERY = /* GraphQL */ `
+  query SymphonyReleaseBranchPullRequests($owner: String!, $name: String!, $head: String!, $base: String!) {
+    repository(owner: $owner, name: $name) {
+      open: pullRequests(headRefName: $head, baseRefName: $base, states: [OPEN], first: 1) { nodes { number } }
+      merged: pullRequests(headRefName: $head, baseRefName: $base, states: [MERGED], first: 20, orderBy: { field: UPDATED_AT, direction: DESC }) {
+        nodes { number title mergeCommit { oid } }
       }
     }
   }
