@@ -1,6 +1,10 @@
 # shellcheck shell=bash
 # Shared helpers of the check scripts (sourced, not run). Exit codes: 0 pass, 1 the code must be fixed (output goes to
-# the agent), 2 an environment problem, 78 the check does not apply here (it passes as "skipped").
+# the agent), 2 an environment problem, 75 busy (a lock was not free in time; Symphony retries later), 78 the check
+# does not apply here (it passes as "skipped").
+
+# shellcheck disable=SC2034 # used by the scripts that source this file
+BUSY_EXIT=75
 
 fix() { echo "$*"; exit 1; }
 env_problem() { echo "environment: $*"; exit 2; }

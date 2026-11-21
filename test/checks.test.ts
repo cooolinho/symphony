@@ -567,6 +567,100 @@ describe('checks/repo.sh', () => {
     const lines = fs.readFileSync(lockLog, 'utf8').trim().split('\n').map((line) => line.split(' ')[0]);
     assert.deepEqual(lines, ['start', 'end', 'start', 'end']);
   });
+
+  describe('--lock wait budget', () => {
+    /** Holds `<TMPDIR>/symphony-checks/<file>` from another process until `release` is called. */
+    async function holdLock(tmp: string, file: string): Promise<{ release: () => void }> {
+      const { spawn } = await import('node:child_process');
+      const dir = path.join(tmp, 'symphony-checks');
+      fs.mkdirSync(dir, { recursive: true });
+      const ready = path.join(tmp, `${file}.held`);
+      const holder = spawn('flock', ['-o', path.join(dir, file), 'bash', '-c', `touch "${ready}"; sleep 30`], { stdio: 'ignore' });
+      const until = Date.now() + 5_000;
+      while (!fs.existsSync(ready)) {
+        if (Date.now() > until) throw new Error('the lock holder did not start');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      return { release: () => holder.kill('SIGKILL') };
+    }
+    const lockEnv = (tmp: string, extra: NodeJS.ProcessEnv = {}) => ({ TMPDIR: tmp, SYMPHONY_ISSUE_REPOSITORY: 'acme/app', ...extra });
+
+    it('exits 75 (busy) without running the check when the lock stays taken for SYMPHONY_CHECK_LOCK_WAIT_S', async () => {
+      const f = withCheck('ci', 'echo check ran');
+      const tmp = tempDir('symphony-locks-');
+      const held = await holdLock(tmp, 'acme_app-ci.lock');
+      try {
+        const started = Date.now();
+        const result = repo(f, ['--lock', 'ci'], lockEnv(tmp, { SYMPHONY_CHECK_LOCK_WAIT_S: '1' }));
+        assert.equal(result.status, 75, result.out);
+        assert.match(result.out, /busy: another "ci" check held .*acme_app-ci\.lock for 1s; not run, Symphony retries later/);
+        assert.equal(result.out.includes('check ran'), false);
+        assert.ok(Date.now() - started >= 900, 'it waited for the lock');
+      } finally {
+        held.release();
+      }
+    });
+
+    it('waits at most half of SYMPHONY_CHECK_TIMEOUT_MS, so the run keeps the other half', async () => {
+      const f = withCheck('ci', 'echo check ran');
+      const tmp = tempDir('symphony-locks-');
+      const held = await holdLock(tmp, 'acme_app-ci.lock');
+      try {
+        const started = Date.now();
+        const result = repo(f, ['--lock', 'ci'], lockEnv(tmp, { SYMPHONY_CHECK_LOCK_WAIT_S: '900', SYMPHONY_CHECK_TIMEOUT_MS: '2000' }));
+        assert.equal(result.status, 75, result.out);
+        assert.match(result.out, /for 1s; not run/);
+        assert.ok(Date.now() - started < 10_000, 'the wait was capped');
+      } finally {
+        held.release();
+      }
+    });
+
+    it('runs once the lock is free, and names the wait', async () => {
+      const f = withCheck('ci', 'echo check ran');
+      const tmp = tempDir('symphony-locks-');
+      const held = await holdLock(tmp, 'acme_app-ci.lock');
+      setTimeout(() => held.release(), 1_200);
+      const { spawn } = await import('node:child_process');
+      const env = { ...hermeticEnv(), PATH: `${f.bin}${path.delimiter}${process.env.PATH}`, FAKE_LOG: f.log, ...lockEnv(tmp, { SYMPHONY_CHECK_LOCK_WAIT_S: '20' }) };
+      let out = '';
+      const status = await new Promise<number | null>((resolve) => {
+        const child = spawn('bash', [REPO_SCRIPT, '--lock', 'ci'], { cwd: f.repo, env });
+        child.stdout.on('data', (chunk) => (out += chunk));
+        child.stderr.on('data', (chunk) => (out += chunk));
+        child.on('exit', resolve);
+      });
+      assert.equal(status, 0, out);
+      assert.match(out, /== ci: waited \d+s for .*acme_app-ci\.lock/);
+      assert.match(out, /check ran/);
+    });
+
+    it('SYMPHONY_CHECK_LOCK_SCOPE=host shares one lock across repositories', async () => {
+      const f = withCheck('ci', 'echo check ran');
+      const tmp = tempDir('symphony-locks-');
+      const held = await holdLock(tmp, 'host-ci.lock');
+      try {
+        const perRepository = repo(f, ['--lock', 'ci'], lockEnv(tmp, { SYMPHONY_CHECK_LOCK_WAIT_S: '0' }));
+        assert.equal(perRepository.status, 0, perRepository.out);
+        const host = repo(f, ['--lock', 'ci'], lockEnv(tmp, { SYMPHONY_CHECK_LOCK_WAIT_S: '0', SYMPHONY_CHECK_LOCK_SCOPE: 'host' }));
+        assert.equal(host.status, 75, host.out);
+        assert.match(host.out, /host-ci\.lock/);
+      } finally {
+        held.release();
+      }
+    });
+
+    it('treats a bad wait or scope as an environment problem (exit 2)', () => {
+      const f = withCheck('ci', 'echo check ran');
+      const tmp = tempDir('symphony-locks-');
+      const wait = repo(f, ['--lock', 'ci'], lockEnv(tmp, { SYMPHONY_CHECK_LOCK_WAIT_S: '10m' }));
+      assert.equal(wait.status, 2, wait.out);
+      assert.match(wait.out, /SYMPHONY_CHECK_LOCK_WAIT_S must be whole seconds/);
+      const scope = repo(f, ['--lock', 'ci'], lockEnv(tmp, { SYMPHONY_CHECK_LOCK_SCOPE: 'everywhere' }));
+      assert.equal(scope.status, 2, scope.out);
+      assert.match(scope.out, /SYMPHONY_CHECK_LOCK_SCOPE must be repository or host/);
+    });
+  });
 });
 
 describe('checks/laravel.sh SYMPHONY_TEST_PARALLEL, edge cases', () => {

@@ -189,7 +189,7 @@ checks:
   on_enter:
     In review:
       - name: ci
-        command: bash "$SYMPHONY_WORKFLOW_DIR/checks/repo.sh" ci -- bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh" --full
+        command: bash "$SYMPHONY_WORKFLOW_DIR/checks/repo.sh" --lock ci -- bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh" --full
         timeout_ms: 1200000
       - name: prod-smoke
         command: bash "$SYMPHONY_WORKFLOW_DIR/checks/repo.sh" --lock prod-smoke
@@ -200,11 +200,14 @@ checks:
 |---|---|
 | `name` | Lowercase letters, digits, `.`, `_`, `-` (at most 50), unique per column. The script sees it as `SYMPHONY_CHECK_NAME`. |
 | `command` | The bash script, run like a plain one. |
-| `timeout_ms` | Its own limit (default `checks.timeout_ms`); may come from a variable. The checks of one column run in one tool call, so their sum must stay below `claude.turn_timeout_ms`. |
+| `timeout_ms` | Its own limit (default `checks.timeout_ms`); may come from a variable. The script sees it as `SYMPHONY_CHECK_TIMEOUT_MS`. The checks of one column run in one tool call, so their sum must stay below `claude.turn_timeout_ms`. |
 
 - **Order and failures.** The checks run one after the other. A failing check (exit 1) does not stop the others: the
   agent gets every failure in one answer, each under a header `== <name>: failed (exit 1, 6m12s) ==`, sharing the
   6000 characters. A timeout or an environment problem stops at once.
+- **Exit 75** means the check did not run because a shared resource stayed busy (`checks/repo.sh --lock`, see
+  below): like a timeout, `check_timeout`, the issue stays in its column, and the agent ends its turn without calling
+  again; the status reads `busy, not run`.
 - **Exit 78** means the check does not apply here (no such script in the repository, no Laravel app): it passes as
   `skipped` and reports no status.
 - **Cache.** Each check is cached on its own (HEAD sha + name + command), so after a failure only the failed ones run
@@ -224,7 +227,12 @@ own merge, and a changed script applies once it is merged. Without that script i
 without one it exits 78. First it requires a clean tree with everything pushed, like `checks/laravel.sh`.
 
 - `--lock` runs one check of that name per repository at a time (`flock`), for checks with fixed compose project
-  names, ports or networks. Waiting counts against the check's timeout.
+  names, ports or networks, and for heavy ones that slow each other into their timeout when they run side by side
+  (the shipped `ci` and `prod-smoke`). `SYMPHONY_CHECK_LOCK_SCOPE=host` makes it one per host, across repositories.
+  The wait is bounded so the run keeps its time: at most `SYMPHONY_CHECK_LOCK_WAIT_S` seconds (default `900`) and
+  never more than half of the check's `timeout_ms`. A wait that ends without the lock exits **75** (busy): the check
+  did not run, the agent ends its turn, and Symphony continues the issue after a backoff (see below).
+  While the lock is held the run itself still counts against `timeout_ms`; size it for wait plus run.
 - With `SYMPHONY_CI_DOCKER_HOST` (the compose profile `ci`, see [docker.md](docker.md)) the script gets
   `DOCKER_HOST`, `DOCKER_TLS_VERIFY` and `DOCKER_CERT_PATH` for the CI Docker daemon, and `SYMPHONY_DOCKER_HOST_IP`,
   the address of ports that daemon publishes. Agents never get these variables.
@@ -253,7 +261,14 @@ touched. The guard decides on the run's role and the target column only, in this
 | `0` | The issue is moved; the tool result carries `note: "Checks passed — end your turn now."` (`report_result` keeps its own note, `"Result recorded — end your turn now."`) | End the turn, so the next role takes over. |
 | `1` | Tool error `check_failed`; the column is unchanged | The last 6000 characters of the output; fix the problems and call `set_status` (or `report_result`) again. |
 | none, `checks.timeout_ms` reached | Tool error `check_timeout`; the column is unchanged | A runtime limit, not the change: do not change code and do not move the issue to `Blocked`; call `set_status` once more, and if that times out too, comment and end the turn without a status change. Symphony picks the issue up again later. |
+| `75` (busy) | Tool error `check_timeout`; the column is unchanged | The check did not run (its lock stayed taken): do not change code, do not move to `Blocked`, do not call again now; comment and end the turn. |
 | other, aborted, or the check cannot start | Tool error `check_error`; the column is unchanged | Do not change code; describe the problem in an issue comment and move the issue to `Blocked` (`report_result`: end the turn instead). |
+
+**Backoff after a timed-out hand-off.** A result-driven run (`report_result`) whose hand-off check timed out or was
+busy ends without a reminder turn. Its continuation does not start after the usual 1 s, which would rerun the check
+at once on the same loaded host: consecutive such runs of a claim wait 5, 10, 20, then 30 minutes each, and the
+issue gives up its slot meanwhile (the dashboard queue shows `continues at …, after a timed-out entry check`). Any
+other end of a run starts the count again.
 
 **Cache.** A passing check is remembered per claim, in memory, under the key `HEAD sha` + hash of the script text. Before
 running a check the guard reads `git rev-parse HEAD` and `git status --porcelain` (5 s timeout each); when the tree
