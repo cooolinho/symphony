@@ -822,7 +822,12 @@ checks:
   session started from. The exception: a session that started on the base branch (its start commit is an ancestor of
   `origin/<base>`) after the hand-off measures from its start, so pull requests merged while there was no issue branch
   (a spike) are not the engineer's. Local commits of an earlier session are not on `origin/<base>` and stay counted.
-  A commit someone else pushes to the issue branch after the hand-off counts as the engineer's: `passed` and `failed`
+  A merge of the base branch into the issue branch after the hand-off (by a human, or by
+  [`checks.integrate_base`](#base-integration)) does not count: Symphony measures from the virtual merge of the baseline
+  with the part of `origin/<base_branch>` (else `origin/HEAD`) that `HEAD` contains (`git merge-tree --write-tree`), so
+  only a conflict resolution or an own change inside the merge is the engineer's; the refusal then adds "Changes that
+  came from origin/<base> are not counted". If that virtual merge conflicts, the baseline alone is used. Any other
+  commit someone else pushes to the issue branch after the hand-off counts as the engineer's: `passed` and `failed`
   are refused, the engineer reports `blocked`.
 - **Failed cases reach the developer.** After a `failed` result the prompt of the developer lists the failed cases
   (`results.failed_cases`), the test engineer's summary and the commands it ran (`results.test`, see
@@ -952,7 +957,8 @@ pipeline:
   `origin/<base_branch>`, else `origin/HEAD`). If git cannot tell, the stage is **needed**: a failure never skips it
   silently.
 - **Path rule.** The docs agent may only change files matching `pipeline.docs_paths`. `report_result` compares the
-  files that differ from the last hand-off of the developer or test engineer and refuses a `done` or `not_needed` result that comes with other
+  files that differ from the last hand-off of the developer or test engineer (a merge of the base branch after it does
+  not count, as for the test engineer) and refuses a `done` or `not_needed` result that comes with other
   files with `invalid_result`, naming them; nothing is recorded. `blocked` is always accepted and notes the files. The prompt lists the paths as `docs_paths`.
 - **Verdicts.** `done` (with the changed `files`) and `not_needed` lead to `Agent review`, `blocked` to `Blocked`.
 - **Red entry check.** The docs agent cannot fix code or tests. When the entry check of `Agent review` fails for its `done` or `not_needed`, `on_check_failed: In progress` records the result with the check output and sends the issue back to the developer (counted by `max_check_failures`). The path rule then measures from the developer's next hand-off. Without `on_check_failed` the agent gets `check_failed` as before.

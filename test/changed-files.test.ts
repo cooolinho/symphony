@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
-import { baselineCommit, changedFilesSince, filesOutside, isAncestor } from '../src/orchestrator/changed-files.ts';
+import { baselineCommit, changedFilesSince, filesOutside, isAncestor, mergedWithBase, ownChangedFiles } from '../src/orchestrator/changed-files.ts';
 import { tempDir } from './helpers.ts';
 
 // The path rule of the test engineer (docs/configuration.md#the-test-engineer) against a real repository.
@@ -233,5 +233,85 @@ describe('baselineCommit', () => {
       git(repo, 'update-ref', 'refs/remotes/origin/main', handoff);
       assert.equal(await baselineCommit(repo, handoff, handoff, true), handoff);
     });
+  });
+});
+
+describe('ownChangedFiles: a merge of the base branch after the hand-off (bandenhub#337)', () => {
+  /** main with a hand-off on `issue`, then main moves on with production code and a changelog line. */
+  function moved(): { repo: string; handoff: string } {
+    const { repo } = repository();
+    write(repo, 'CHANGELOG.md', '# Changelog\n\n- one\n');
+    commit(repo, 'changelog');
+    git(repo, 'switch', '-q', '-c', 'issue');
+    write(repo, 'src/feature.ts', 'the developer');
+    const handoff = commit(repo, 'developer');
+    git(repo, 'switch', '-q', 'main');
+    write(repo, 'src/other.ts', 'a merged pull request');
+    write(repo, 'docs/guide.md', 'docs of another issue');
+    commit(repo, 'other pr');
+    git(repo, 'update-ref', 'refs/remotes/origin/main', 'main');
+    git(repo, 'switch', '-q', 'issue');
+    return { repo, handoff };
+  }
+
+  it('does not count what a merge of origin/<base> brought, only the engineer\'s own files', async () => {
+    const { repo, handoff } = moved();
+    git(repo, 'merge', '-q', '--no-edit', 'origin/main');
+    write(repo, 'tests/feature.test.ts', 'the engineer');
+    commit(repo, 'tests');
+    assert.deepEqual(filesOutside(await changedFilesSince(repo, handoff), TEST_PATHS), ['docs/guide.md', 'src/other.ts'], 'the old measure blames the merge');
+    const own = await ownChangedFiles(repo, handoff, 'origin/main');
+    assert.deepEqual(own, { files: ['tests/feature.test.ts'], excludedBase: 'origin/main' });
+  });
+
+  it('counts an own change made after the merge, in the working tree and untracked', async () => {
+    const { repo, handoff } = moved();
+    git(repo, 'merge', '-q', '--no-edit', 'origin/main');
+    write(repo, 'src/feature.ts', 'the engineer "fixed" it');
+    commit(repo, 'own change');
+    write(repo, 'src/other.ts', 'edited, not committed');
+    write(repo, 'src/new.ts', 'untracked');
+    const own = await ownChangedFiles(repo, handoff, 'origin/main');
+    assert.deepEqual(filesOutside(own.files, TEST_PATHS), ['src/feature.ts', 'src/new.ts', 'src/other.ts']);
+  });
+
+  it('counts a file changed inside the merge commit beyond what the merge itself gives', async () => {
+    const { repo, handoff } = moved();
+    git(repo, 'merge', '-q', '--no-commit', '--no-ff', 'origin/main');
+    write(repo, 'src/other.ts', 'changed while merging');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-q', '--no-edit');
+    assert.deepEqual((await ownChangedFiles(repo, handoff, 'origin/main')).files, ['src/other.ts']);
+  });
+
+  it('does not count base commits the branch has not merged', async () => {
+    const { repo, handoff } = moved();
+    assert.equal(await mergedWithBase(repo, handoff, 'origin/main'), null);
+    write(repo, 'tests/feature.test.ts', 'the engineer');
+    commit(repo, 'tests');
+    assert.deepEqual(await ownChangedFiles(repo, handoff, 'origin/main'), { files: ['tests/feature.test.ts'], excludedBase: null });
+  });
+
+  it('falls back to the hand-off for an unknown base ref and for a merge that conflicts', async () => {
+    const { repo } = moved();
+    write(repo, 'CHANGELOG.md', '# Changelog\n\n- one\n- mine\n');
+    const handoff = commit(repo, 'developer changelog');
+    assert.equal(await mergedWithBase(repo, handoff, 'origin/nope'), null);
+    git(repo, 'switch', '-q', 'main');
+    write(repo, 'CHANGELOG.md', '# Changelog\n\n- one\n- theirs\n');
+    git(repo, 'update-ref', 'refs/remotes/origin/main', commit(repo, 'theirs'));
+    git(repo, 'switch', '-q', 'issue');
+    assert.throws(() => git(repo, 'merge', '-q', '--no-edit', 'origin/main'));
+    write(repo, 'CHANGELOG.md', '# Changelog\n\n- one\n- mine\n- theirs\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-q', '--no-edit');
+    assert.equal(await mergedWithBase(repo, handoff, 'origin/main'), null);
+    assert.deepEqual(await ownChangedFiles(repo, handoff, 'origin/main'), { files: ['CHANGELOG.md', 'docs/guide.md', 'src/other.ts'], excludedBase: null });
+  });
+
+  it('measures from the hand-off without a base ref', async () => {
+    const { repo, handoff } = moved();
+    git(repo, 'merge', '-q', '--no-edit', 'origin/main');
+    assert.deepEqual(await ownChangedFiles(repo, handoff, null), { files: ['docs/guide.md', 'src/other.ts'], excludedBase: null });
   });
 });
