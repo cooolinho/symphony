@@ -68,6 +68,7 @@ variables:
 | `evidence` | `history`, `log`, `state`, `github_status`, `git` (texts), `transcripts` (`file`, `excerpt`), `comments` (`author`, `created_at`, `body`, markers removed) |
 | `columns` | the active columns |
 | `attempt`, `max_resumes` | the resume this would be, and the limit |
+| `recheck` | `number` (0 = first diagnosis of the block, 1.. = re-check), `max`, `reason` and `previous_cause` (re-checks only), `base_branch`, `base_sha`, `base_checks` (`passed`, `failed`, `pending`, `unknown`; null without a known head) |
 | `paths` | `sessions`, `repositories`, `log`, `workspace` (for the session to read further) |
 | `mode` | the watchdog mode |
 
@@ -108,6 +109,7 @@ The session recommends; `src/watchdog/decide.ts` decides:
 |---|---|
 | `infra_transient`, cause gone | resume |
 | `infra_transient`, cause holds | wait, look again after `cooldown_ms` (not counted as a resume) |
+| `environment` or `infra_transient` escalated | re-checked when the base branch moves (see "Re-check") |
 | `environment`, `missing_result`, cause gone | resume |
 | `question_answered`, confidence `high` | resume; the answer is in the comment |
 | `needs_access`, `needs_human`, `round_limit`, `unknown`, low confidence, or the cause still holds | escalate: comment, `needs-human`, stays blocked |
@@ -122,10 +124,30 @@ The target is the session's `target_column`, else the column the issue came from
 
 Loop protection, read from the watchdog's own comments on the issue: at most `max_resumes` (default 2) resumes since the
 newest human comment, at least `cooldown_ms` between two, and `settle_ms` after the issue entered the blocked column. A
-block is handled once: the comment's marker records `blocked_at`. In mode `observe`, which writes no comment, the
-watchdog reads its decisions back from `events.jsonl` at start, so a restart does not diagnose the same blocks again. The
-mode is part of that memory: after a switch to `comment` or `act`, blocks that were only observed are diagnosed once
-more and acted on. A `wait` or a failed session is never remembered.
+block is diagnosed once, except for the re-checks below: the comment's marker records `blocked_at`. In mode `observe`,
+which writes no comment, the watchdog reads its decisions back from `events.jsonl` at start, so a restart does not
+diagnose the same blocks again. The mode is part of that memory: after a switch to `comment` or `act`, blocks that were
+only observed are diagnosed once more and acted on. A `wait` or a failed session is never remembered.
+
+### Re-check
+
+An escalation with the cause `environment` or `infra_transient` is not final: such a cause is usually fixed on the base
+branch (a repaired test environment, a fixed check script), not on the issue. The watchdog diagnoses such a block again,
+at most `max_rechecks` times (default 2), when all of this holds:
+
+1. at least `cooldown_ms` passed since the last diagnosis of the block;
+2. the head of the repository's base branch (`tracker.provider.base_branch`, else the default branch) differs from the
+   head recorded with the last diagnosis;
+3. that head's checks are not red or still running. The watchdog reads the commit's combined status and check runs
+   (`statusCheckRollup`, one GraphQL request per repository and pass); without any, Symphony's own entry checks on that
+   commit (`checks_finished` in the repository log). With no signal at all, the moved head alone is the reason.
+
+A diagnosis written before re-checks existed recorded no head; such a block is re-checked once the base branch's checks
+are green. Until then the watchdog only reads the base head (cheap) and spends no session. Each re-check posts a comment
+(`re-check 1/2`), with the usual rules: if the cause is gone, the issue goes back, else it stays blocked. The escalation
+comment says whether a re-check is left (``re-checked once `develop` moves (2 left)``). The count is read from the markers
+of the block's comments and from `events.jsonl`, so a restart neither repeats nor forgets a re-check. `max_rechecks: 0`
+restores one diagnosis per block.
 
 ## The comment
 
@@ -138,8 +160,10 @@ more and acted on. A `wait` or a failed session is never remembered.
 <!-- symphony:watchdog:v1 <base64url JSON> -->
 ```
 
-The marker holds `action` (`resume`, `escalate`, `comment`), `cause`, `target`, `attempt`, `blocked_at`, `prompt_hash`
-and `created_at`. Only markers in comments of Symphony's own account count.
+The marker holds `action` (`resume`, `escalate`, `comment`), `cause`, `target`, `attempt`, `blocked_at`, `prompt_hash`,
+`created_at`, `decision` (`resume` or `escalate`, also in mode `comment`), `recheck` (0 for the first diagnosis of the
+block) and `base_sha` (the base branch head at the diagnosis). Markers without the last three still decode: `decision`
+follows `action`, `recheck` is 0, `base_sha` null. Only markers in comments of Symphony's own account count.
 
 Symphony normally passes only comments of other accounts to the next agent (`human_feedback`). A watchdog comment whose
 marker says `resume` is passed on as well, under "Newest human comments", so the next stage reads the comment as its
@@ -154,6 +178,7 @@ watchdog:
   settle_ms: 120000
   cooldown_ms: 600000
   max_resumes: 2
+  max_rechecks: 2
   prompt: roles/watchdog.md          # relative to WORKFLOW.md
   api_url: ${SYMPHONY_WATCHDOG_API_URL:-}
   log_file: ${SYMPHONY_WATCHDOG_LOG_FILE:-}
@@ -170,7 +195,7 @@ Unknown keys are errors. The watchdog reloads `WORKFLOW.md` like the orchestrato
 
 | Path (container) | Content |
 |---|---|
-| `~/.local/state/symphony-watchdog/events.jsonl` | one line per diagnosis: issue, `blocked_at`, mode, block, cause, confidence, recommendation, decision, reason, action, cost, prompt hash, errors |
+| `~/.local/state/symphony-watchdog/events.jsonl` | one line per diagnosis: issue, `blocked_at`, mode, block, cause, confidence, recommendation, decision, reason, action, cost, prompt hash, errors, `recheck`, `base_sha`, `base_checks` |
 | `~/.local/state/symphony-watchdog/sessions/<workspace key>/<time>.jsonl` | transcripts of the diagnosis sessions |
 | `~/.local/state/symphony-watchdog/heartbeat.json` | sign of life, written every 30 s and after each pass: `pid`, `mode`, `model`, `started_at`, `updated_at`, `last_tick_at`, `stopped_at` |
 

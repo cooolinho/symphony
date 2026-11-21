@@ -104,3 +104,73 @@ export function decide(input: DecideInput): Decision {
   }
   return { action: 'resume', target, attempt: resumes.length + 1, reason: `cause ${diagnosis.cause} is gone` };
 }
+
+/** Causes whose escalation is not final: the fix lands on the base branch (a repaired test env, an outage over), not on the issue. */
+export const RECHECK_CAUSES: ReadonlySet<string> = new Set<DiagnosisCause>(['environment', 'infra_transient']);
+
+/** The newest settled diagnosis of one block, from its comment marker or from `events.jsonl`. */
+export interface PriorDiagnosis {
+  decision: 'resume' | 'escalate' | 'skip' | null;
+  cause: string | null;
+  /** 0 for the first diagnosis of the block, 1.. for re-checks. */
+  recheck: number;
+  /** Head of the base branch when it ran; null when unknown (or written before re-checks existed). */
+  baseSha: string | null;
+  at: Date;
+}
+
+/** Head of the repository's base branch and what its checks say. */
+export interface BaseState {
+  branch: string;
+  sha: string;
+  /** The commit's combined status and check runs, else Symphony's entry checks on that commit; `unknown` without either. */
+  checks: 'passed' | 'failed' | 'pending' | 'unknown';
+}
+
+export type RecheckPlan =
+  | { action: 'diagnose'; recheck: number; reason: string }
+  | { action: 'later'; reason: string }
+  | { action: 'final'; reason: string };
+
+export interface RecheckInput {
+  prior: PriorDiagnosis | null;
+  config: Pick<WatchdogConfig, 'maxRechecks' | 'cooldownMs'>;
+  now: Date;
+  /** Read only when a re-check is due: the cheap pre-check before an expensive diagnosis. */
+  readBase: () => Promise<BaseState | null>;
+}
+
+export function openForRecheck(prior: Pick<PriorDiagnosis, 'decision' | 'cause'>): boolean {
+  return prior.decision === 'escalate' && prior.cause !== null && RECHECK_CAUSES.has(prior.cause);
+}
+
+const short = (sha: string | null) => (sha === null ? 'unknown' : sha.slice(0, 7));
+
+/**
+ * Whether a block is diagnosed (again) now (docs/watchdog.md, "Re-check"). A block without a diagnosis gets its first.
+ * An escalation for `environment` / `infra_transient` is diagnosed again, at most `max_rechecks` times, once
+ * `cooldown_ms` passed and the base branch has a new head whose checks are not red or pending. Without a recorded head
+ * (older diagnoses), only green checks count as a reason.
+ */
+export async function planRecheck(input: RecheckInput): Promise<RecheckPlan> {
+  const { prior, config } = input;
+  if (prior === null) return { action: 'diagnose', recheck: 0, reason: 'first diagnosis of the block' };
+  if (!openForRecheck(prior)) return { action: 'final', reason: `decided: ${prior.decision ?? 'comment'} (cause ${prior.cause ?? 'unknown'})` };
+  if (prior.recheck >= config.maxRechecks) {
+    return { action: 'final', reason: `${prior.recheck} re-checks done (watchdog.max_rechecks ${config.maxRechecks})` };
+  }
+  if (input.now.getTime() - prior.at.getTime() < config.cooldownMs) return { action: 'later', reason: 'cooldown since the last diagnosis' };
+  const base = await input.readBase();
+  if (base === null) return { action: 'later', reason: 'head of the base branch unknown' };
+  if (prior.baseSha !== null && base.sha === prior.baseSha) return { action: 'later', reason: `${base.branch} still at ${short(base.sha)}` };
+  if (base.checks === 'failed') return { action: 'later', reason: `checks on ${base.branch} ${short(base.sha)} failed` };
+  if (base.checks === 'pending') return { action: 'later', reason: `checks on ${base.branch} ${short(base.sha)} still running` };
+  if (prior.baseSha === null && base.checks !== 'passed') {
+    return { action: 'later', reason: `no base head recorded with the diagnosis; waiting for green checks on ${base.branch}` };
+  }
+  return {
+    action: 'diagnose',
+    recheck: prior.recheck + 1,
+    reason: `${base.branch} moved from ${short(prior.baseSha)} to ${short(base.sha)} (checks ${base.checks})`,
+  };
+}
