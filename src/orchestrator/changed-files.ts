@@ -34,19 +34,61 @@ export async function baselineCommit(cwd: string, handoff: string | null, start:
 }
 
 /**
+ * The tree of `base` merged with the part of `baseRef` (e.g. `origin/develop`) that HEAD contains, as git would merge
+ * them, without touching the workspace (`git merge-tree --write-tree`). Only what HEAD really merged counts: base
+ * commits HEAD does not have are no change of the branch. Null when `baseRef` does not resolve, HEAD merged nothing of
+ * it beyond `base`, the virtual merge conflicts, or git cannot tell: the caller then measures from `base` alone.
+ */
+export async function mergedWithBase(cwd: string, base: string, baseRef: string): Promise<string | null> {
+  let merged: string;
+  try {
+    merged = (await git(cwd, ['merge-base', 'HEAD', `${baseRef}^{commit}`])).trim();
+  } catch {
+    return null;
+  }
+  if (!COMMIT_NAME.test(merged) || (await isAncestor(cwd, merged, base))) return null;
+  try {
+    const tree = (await git(cwd, ['merge-tree', '--write-tree', '--no-messages', base, merged])).split('\n')[0]?.trim() ?? '';
+    return COMMIT_NAME.test(tree) ? tree : null;
+  } catch {
+    // Exit 1 = conflicts, else an old git or an unknown commit.
+    return null;
+  }
+}
+
+/** What `changedFilesSince` found: the files, and the base ref whose changes were left out (null when none were). */
+export interface ChangedFiles {
+  files: string[];
+  excludedBase: string | null;
+}
+
+/**
  * The repository-relative paths that differ from the commit `base`: committed since (`base..HEAD`), changed in the working
  * tree or index, and untracked (ignored files stay out), sorted. Renames count as the deletion of the old and the
  * addition of the new path, so moving a file out of a protected directory is still seen. Throws `paths_unverifiable`
  * when git cannot tell.
  */
 export async function changedFilesSince(cwd: string, base: string): Promise<string[]> {
+  return (await ownChangedFiles(cwd, base, null)).files;
+}
+
+/**
+ * {@link changedFilesSince}, but with `baseRef` (the pull request's base, `origin/<base>`) measured from the virtual
+ * merge of `base` and `baseRef`: what came onto the branch by merging the base branch after `base` (a human,
+ * `checks.integrate_base`) is not counted, while a conflict resolution or an own change inside such a merge still is.
+ * Without `baseRef`, or when the virtual merge is not possible ({@link mergedWithBase}), it measures from `base`.
+ */
+export async function ownChangedFiles(cwd: string, base: string, baseRef: string | null): Promise<ChangedFiles> {
   try {
+    const merged = baseRef === null ? null : await mergedWithBase(cwd, base, baseRef);
+    const from = merged ?? base;
     const [committed, working, untracked] = await Promise.all([
-      git(cwd, ['diff', '-z', '--no-renames', '--name-only', `${base}..HEAD`, '--']),
-      git(cwd, ['diff', '-z', '--no-renames', '--name-only', base, '--']),
+      git(cwd, ['diff', '-z', '--no-renames', '--name-only', from, 'HEAD', '--']),
+      git(cwd, ['diff', '-z', '--no-renames', '--name-only', from, '--']),
       git(cwd, ['ls-files', '-z', '--full-name', '--others', '--exclude-standard']),
     ]);
-    return [...new Set([...names(committed), ...names(working), ...names(untracked)])].sort();
+    const files = [...new Set([...names(committed), ...names(working), ...names(untracked)])].sort();
+    return { files, excludedBase: merged === null ? null : baseRef };
   } catch (error) {
     throw new SymphonyError('paths_unverifiable', `git could not list the files changed since ${base.slice(0, 12)}: ${errorMessage(error)}`, { cause: error });
   }

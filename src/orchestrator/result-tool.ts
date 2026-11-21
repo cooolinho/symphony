@@ -80,7 +80,7 @@ export interface PathRule {
    * The commit the role's changes are measured from (`base`) and the repository-relative files that differ from it,
    * looked up when the agent reports; throws when that cannot be told.
    */
-  changedFiles: () => Promise<{ base: string; files: string[] }>;
+  changedFiles: () => Promise<{ base: string; files: string[]; excludedBase?: string | null }>;
   /** The setting `allowed` comes from, named in the refusal; default `pipeline.test_paths`. */
   setting?: string;
   /** What the role does instead of changing other files, ending the refusal; default: the test engineer's. */
@@ -397,12 +397,12 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
   };
 
   /** The files outside the role's paths (with the commit they are measured from); null when no rule applies, `unverifiable` when git cannot tell. */
-  const pathFacts = async (): Promise<{ rule: PathRule; base: string; outside: string[] } | { rule: PathRule; unverifiable: string } | null> => {
+  const pathFacts = async (): Promise<{ rule: PathRule; base: string; outside: string[]; excludedBase: string | null } | { rule: PathRule; unverifiable: string } | null> => {
     const rule = params.pathRule;
     if (rule === undefined || rule === null) return null;
     try {
       const changed = await rule.changedFiles();
-      return { rule, base: changed.base, outside: filesOutside(changed.files, rule.allowed) };
+      return { rule, base: changed.base, outside: filesOutside(changed.files, rule.allowed), excludedBase: changed.excludedBase ?? null };
     } catch (error) {
       return { rule, unverifiable: errorMessage(error) };
     }
@@ -423,8 +423,9 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
           `problem with your change. Call ${RESULT_TOOL} again; if it fails again, report the verdict \`blocked\` with the problem as the blocker.`,
       );
     }
-    const { rule, base, outside } = facts;
+    const { rule, base, outside, excludedBase } = facts;
     if (outside.length === 0) return null;
+    const excluded = excludedBase === null ? '' : ` Changes that came from ${excludedBase} are not counted.`;
     const shown = outside.slice(0, OFFENDING_FILES_SHOWN).map((file) => `- ${file}`);
     const more = outside.length > shown.length ? `\n- … and ${outside.length - shown.length} more` : '';
     return fail(
@@ -432,6 +433,7 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
       `The ${kind} result is invalid: role ${role.name} may only change files matching \`${rule.setting ?? 'pipeline.test_paths'}\` ` +
         `(${rule.allowed.length > 0 ? rule.allowed.join(', ') : 'none configured'}), but ${outside.length} file(s) that differ from ` +
         `commit ${base.slice(0, 12)} (the developer's last hand-off, else where your session started) are outside them:\n${shown.join('\n')}${more}\n` +
+        (excluded === '' ? '' : `${excluded.trim()}\n`) +
         'Nothing was recorded. Undo the changes you made yourself: restore a changed or deleted file with ' +
         `\`git checkout ${base.slice(0, 12)} -- <file>\`, delete a new one, commit, and report again. Leave a file alone that you did not ` +
         'change, for example a commit that was already on the branch or a push by someone else: report the verdict `blocked` with ' +
