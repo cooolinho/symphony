@@ -133,6 +133,7 @@ describe('decide', () => {
     cause: 'infra_transient',
     evidence: ['githubstatus incident resolved 11:50'],
     cause_gone: true,
+    fixable_in_target: false,
     comment: 'go on',
     target_column: 'In progress',
     confidence: 'high',
@@ -195,6 +196,46 @@ describe('decide', () => {
   it('falls back to the column the issue was blocked from', () => {
     const decision = decide(input({ diagnosis: diagnosis({ target_column: null }), block: { ...input().block, from: 'Testing' } }));
     assert.equal(decision.action === 'resume' && decision.target, 'Testing');
+  });
+
+  describe('fixable in the target column', () => {
+    // bandenhub#337: a path-rule refusal after a human merged develop; the developer hands off again.
+    const holds = (over: Partial<Diagnosis> = {}) => diagnosis({ cause: 'environment', cause_gone: false, fixable_in_target: true, target_column: 'In progress', ...over });
+
+    it('resumes a cause that still holds when the target column can fix it with high confidence', () => {
+      assert.deepEqual(decide(input({ diagnosis: holds() })), { action: 'resume', target: 'In progress', attempt: 1, reason: 'cause environment can be fixed in "In progress"' });
+      assert.equal(decide(input({ diagnosis: holds({ cause: 'missing_result' }) })).action, 'resume');
+    });
+
+    it('escalates it below high confidence or when it is not fixable there', () => {
+      assert.equal(decide(input({ diagnosis: holds({ confidence: 'medium' }) })).action, 'escalate');
+      assert.deepEqual(decide(input({ diagnosis: holds({ fixable_in_target: false }) })), { action: 'escalate', reason: 'cause environment still holds' });
+      assert.equal(decide(input({ diagnosis: holds({ target_column: null }) })).action, 'escalate');
+      assert.equal(decide(input({ diagnosis: holds({ cause: 'infra_transient', fixable_in_target: false }) })).action, 'wait');
+    });
+
+    it('keeps the loop protection and the column rules', () => {
+      const entries = [resumeAt('2026-11-12T09:00:00Z'), resumeAt('2026-11-12T10:00:00Z')];
+      assert.equal(decide(input({ diagnosis: holds(), entries })).action, 'escalate');
+      assert.equal(decide(input({ diagnosis: holds({ target_column: 'Ready' }) })).action, 'escalate');
+    });
+
+    it('never resumes the human causes', () => {
+      for (const cause of ['needs_access', 'needs_human', 'unknown'] as const) {
+        assert.equal(decide(input({ diagnosis: holds({ cause }) })).action, 'escalate', cause);
+      }
+    });
+
+    it('resumes a round limit once per issue, only when fixable with high confidence', () => {
+      const limit = (over: Partial<Diagnosis> = {}) => holds({ cause: 'round_limit', ...over });
+      assert.equal(decide(input({ diagnosis: limit() })).action, 'resume');
+      assert.equal(decide(input({ diagnosis: limit({ fixable_in_target: false }) })).action, 'escalate');
+      assert.equal(decide(input({ diagnosis: limit({ confidence: 'medium' }) })).action, 'escalate');
+      const earlier = { marker: marker({ cause: 'round_limit' }), comment: comment(encodeWatchdogMarker(marker({ cause: 'round_limit' })), '2026-11-10T10:00:00Z') };
+      assert.deepEqual(decide(input({ diagnosis: limit(), entries: [earlier] })), { action: 'escalate', reason: 'a round limit was already resumed once on this issue' });
+      const otherCause = { marker: marker({ cause: 'environment' }), comment: comment(encodeWatchdogMarker(marker()), '2026-11-10T10:00:00Z') };
+      assert.equal(decide(input({ diagnosis: limit(), entries: [otherCause] })).action, 'resume');
+    });
   });
 });
 
