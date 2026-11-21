@@ -10,6 +10,7 @@ import { normalizeStateName, type EntryCheck, type ServiceConfig } from '../work
 import { checkSummary } from '../workflow/results.ts';
 import { roleName, type RoleConfig } from '../workflow/roles.ts';
 import { isTerminalState } from './eligibility.ts';
+import { conflictOutput, type IntegrateResult } from './integrate-base.ts';
 import { subIssueLimit } from './work-packages.ts';
 
 /** Tool error categories the guard returns instead of running a status-changing tool. */
@@ -191,7 +192,15 @@ export interface GuardParams {
   reportStatus?: (report: CheckStatusReport) => Promise<void>;
   /** Delay before a named check reports `pending`; default {@link PENDING_STATUS_DELAY_MS}. */
   pendingDelayMs?: number;
+  /**
+   * Merges `origin/<base>` into the workspace's branch before the checks of a column in `checks.integrate_base`
+   * (see `integrate-base.ts`); omitted = never. A conflict denies the move as `check_failed` (`on_check_failed`).
+   */
+  integrateBase?: () => Promise<IntegrateResult>;
 }
+
+/** Name of the synthetic check record of a base integration that conflicted. */
+export const INTEGRATE_BASE_CHECK = 'integrate-base';
 
 /** Columns the role may move to, or null when unrestricted (no `roles`, or no `may_move_to`). */
 function allowedTargets(params: GuardParams): string[] | null {
@@ -395,6 +404,11 @@ export function createGuard(params: GuardParams): TransitionGuard {
     const workspace = params.workspace;
     if (workspace === null) return checkError(`"${target}"`, 'there is no workspace to run it in', tool);
 
+    if (params.integrateBase !== undefined && params.config.checks.integrateBase?.has(key) === true) {
+      const denied = await integrate(target, params.integrateBase, tool);
+      if (denied !== null) return denied;
+    }
+
     const clean = params.cache !== undefined ? await cleanHead(workspace.path) : null;
     // Everything cached: no RunningChecks phase, as before for a single script.
     const cachedAll = clean !== null ? checks.map((check) => params.cache?.get(cacheKey(clean, check))) : [];
@@ -441,6 +455,58 @@ export function createGuard(params: GuardParams): TransitionGuard {
         publish(gate);
       }
     });
+  };
+
+  /**
+   * Brings the branch up to date with its base before the checks. A conflict is the code's problem and goes back like a
+   * failed check; a git failure only skips the integration (logged): the auto-merge still catches a conflict later.
+   */
+  const integrate = async (target: string, run: () => Promise<IntegrateResult>, tool: string): Promise<GuardDecision | null> => {
+    const started = Date.now();
+    let result: IntegrateResult;
+    try {
+      result = await run();
+    } catch (error) {
+      result = { kind: 'error', base: null, message: errorMessage(error) };
+    }
+    const durationMs = Date.now() - started;
+    if (result.kind === 'up_to_date') return null;
+    if (result.kind === 'merged') {
+      emit('base_integrated', `merged origin/${result.base} before the entry check for ${target} (${result.sha})`, { target, role, base: result.base, sha: result.sha, duration_ms: durationMs });
+      return null;
+    }
+    if (result.kind === 'error') {
+      emit('base_integration_skipped', `origin/${result.base ?? '?'} not merged before the entry check for ${target}: ${result.message}`, { target, role, base: result.base, reason: result.message });
+      return null;
+    }
+    const sha = params.headSha !== undefined ? await params.headSha() : null;
+    const output = conflictOutput(result);
+    const record: CheckRecord = {
+      target,
+      name: INTEGRATE_BASE_CHECK,
+      role,
+      sha,
+      exitCode: 1,
+      timedOut: false,
+      durationMs,
+      ok: false,
+      result: 'check_failed',
+      finishedAt: new Date(),
+    };
+    emit('checks_finished', `entry check for ${INTEGRATE_BASE_CHECK} for ${target} check_failed`, {
+      target,
+      role,
+      sha,
+      name: INTEGRATE_BASE_CHECK,
+      ok: false,
+      exit_code: 1,
+      timed_out: false,
+      duration_ms: durationMs,
+      conflicts: result.files,
+    });
+    params.onCheckFinished?.(record);
+    const label = checkLabel(target, { name: INTEGRATE_BASE_CHECK });
+    return { allow: false, category: 'check_failed', message: failedMessage(label, output, tool), failed: { output, check: record } };
   };
 
   const runGate = async (

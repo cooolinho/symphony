@@ -41,6 +41,11 @@ export interface ChecksConfig {
   onEnter: ReadonlyMap<string, readonly EntryCheck[]>;
   /** Report named checks to the tracker (GitHub commit statuses `symphony/<name>`). */
   reportStatus: boolean;
+  /**
+   * Normalized columns before whose checks Symphony merges `origin/<base>` into the issue branch and pushes the merge
+   * (`checks.integrate_base`); a conflict fails the entry check. Absent or empty = never.
+   */
+  integrateBase?: ReadonlySet<string>;
 }
 
 /** One entry check: a bash script; a named one (`ci`, `prod-smoke`) is reported as `symphony/<name>`. */
@@ -1100,12 +1105,17 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
       }
     }
   }
-  const checks: ChecksConfig = {
+  const checks: { -readonly [K in keyof ChecksConfig]: ChecksConfig[K] } = {
     timeoutMs: checksTimeoutMs,
     retries: reader.int(checksRaw, 'retries', 'checks.retries', 0, 0),
     onEnter,
     reportStatus: reader.bool(checksRaw, 'report_status', 'checks.report_status', false),
   };
+  const integrateBase = new Set((reader.stringList(checksRaw, 'integrate_base', 'checks.integrate_base') ?? []).map(normalizeStateName).filter((column) => column !== ''));
+  if (integrateBase.size > 0) checks.integrateBase = integrateBase;
+  for (const column of checks.integrateBase ?? []) {
+    if (!onEnter.has(column)) reader.errors.push(`checks.integrate_base: "${column}" has no checks in checks.on_enter, so nothing would run after the merge`);
+  }
   if (checks.retries > 3) reader.errors.push(`checks.retries must be between 0 and 3 (got ${checks.retries})`);
 
   // agent

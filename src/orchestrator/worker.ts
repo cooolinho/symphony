@@ -42,6 +42,7 @@ import { EMPTY_RESULTS, issueTemplateValue, renderPrompt } from '../workflow/tem
 import { writeAttachments, type AttachmentFile } from '../workspace/attachments.ts';
 import { changedFiles, commitStats, type CommitStat } from '../workspace/changes.ts';
 import { baselineCommit, changedFilesSince, isAncestor } from './changed-files.ts';
+import { integrateBase } from './integrate-base.ts';
 import { createGuard, guardTools, toolsForRole, type CheckCache, type CheckRecord, type GateRun, type GuardParams } from './guard.ts';
 import { createResultTool, resultReminder, type LessonFacts, type PathRule, type ResultToolAdapter, type ResultToolParams } from './result-tool.ts';
 import { reviewedFiles, securityBaseRef } from './security.ts';
@@ -664,6 +665,10 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       },
       onGateUpdate: (gate) => callbacks.gateUpdated(gate),
       onDenied: (target, message) => callbacks.transitionDenied(target, message),
+      integrateBase: () => {
+        const base = issue.native_ref?.base_branch;
+        return integrateBase(activeWorkspace.path, { base: typeof base === 'string' ? base : null, signal });
+      },
       ...checkStatusReporter(params.workflow.config, params.adapter, issue),
       onEvent: (event, message, detail) =>
         callbacks.agentEvent({
