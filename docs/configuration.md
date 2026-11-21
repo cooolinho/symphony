@@ -177,6 +177,7 @@ checks:
 | `retries` | `0` | Extra attempts after a failed check, `0`–`3`. |
 | `on_enter` | `{}` | Map of column name (matched trimmed and case-insensitively) to what must pass to enter it: a bash script, a [named check](#named-checks), or a list of either, run in order. |
 | `report_status` | `false` | Report named checks to the tracker; GitHub: commit statuses `symphony/<name>` (see [named checks](#named-checks)). |
+| `integrate_base` | `[]` | Columns before whose checks Symphony merges the base branch into the issue branch and pushes the merge (see [base integration](#base-integration)). Each must have checks in `on_enter`. |
 
 #### Named checks
 
@@ -215,6 +216,26 @@ checks:
   the link goes to the agent page when [`server.public_url`](#server) is set. A failed post is logged as
   `check_status_failed` and never changes the decision. GitHub needs the token scope `repo` (classic) or "Commit
   statuses: write". Branch rules can then require `symphony/ci`, and the auto-merge gate reads them like any check.
+
+#### Base integration
+
+With `integrate_base: [In review]`, Symphony brings the issue branch up to date before the column's checks run:
+`git fetch origin <base>` and, if the branch does not contain `origin/<base>` yet, `git merge --no-ff origin/<base>`,
+then a push of the merge commit. No agent is involved and nothing is resolved by hand. `<base>` is the pull request's
+base branch (`tracker.provider.base_branch`), else `origin/HEAD`.
+
+- **Why.** Between the developer's hand-off and the merge, other pull requests land (Testing, Agent review, Security
+  review and a long CI take hours). Without the step, the CI tests a stale branch and a conflict only shows at the
+  [auto-merge](adapters/github-project.md#merge-gate), after the whole gate has run.
+- **Conflict.** The merge is aborted (the workspace stays as it was) and the move is denied as a failed check named
+  `integrate-base`, with the conflicting files in the output. A result-driven role goes to its `on_check_failed`
+  column (the shipped workflow: In progress, back to the developer); the column's checks do not run.
+- **Git failure** (fetch or push fails, uncommitted changes, detached HEAD): the integration is skipped, logged as
+  `base_integration_skipped`, and the checks run as before. A clean merge is logged as `base_integrated`.
+- A workspace on the base branch itself (an integration review without a branch) is left alone.
+
+Tip: a `CHANGELOG.md merge=union` line in the repository's `.gitattributes` lets the merge keep both sides of
+changelog entries, the most common conflict of parallel issues.
 
 #### Repository checks (`checks/repo.sh`)
 

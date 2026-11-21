@@ -418,6 +418,9 @@ checks:
   # true: named checks become commit statuses symphony/<name> on the checked commit (GitHub), which the auto_merge gate
   # and branch rules read. server.public_url links them to the agent page.
   report_status: ${SYMPHONY_CHECKS_REPORT_STATUS:-false}
+  # Before the In review checks Symphony merges origin/<base> into the issue branch and pushes it, so the CI tests what
+  # the merge will contain; a conflict goes back to the developer (on_check_failed) before the long CI run.
+  integrate_base: [In review]
   on_enter:
     Testing: bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh"       # only reached with the Testing stage on: the developer hands over green code
     Agent review: bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh"
