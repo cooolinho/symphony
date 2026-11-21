@@ -42,6 +42,11 @@ export const CHECK_PASSED_OUTPUT_LIMIT = 400;
 export const CHECK_PASSED_NOTE = 'Checks passed — end your turn now.';
 /** Exit code of a check that does not apply here (e.g. no such script in the repository): it passes, as `skipped`. */
 export const CHECK_SKIPPED_EXIT = 78;
+/**
+ * Exit code of a check that did not run because a shared resource stayed busy (`checks/repo.sh --lock`: the lock was not
+ * free in time). Like a timeout it is a runtime limit: `check_timeout`, the issue stays in its column and runs again later.
+ */
+export const CHECK_BUSY_EXIT = 75;
 /** A named check posts `pending` only once it has run this long, so instant skips leave no status. */
 const PENDING_STATUS_DELAY_MS = 5000;
 /** Upper bound for each git call that builds the cache key; on timeout the cache is skipped. */
@@ -246,7 +251,7 @@ function finalStatus(record: CheckRecord): Pick<CheckStatusReport, 'state' | 'de
     case 'check_failed':
       return { state: 'failure', description: `failed (exit ${record.exitCode}) in ${took}, details on Symphony` };
     case 'check_timeout':
-      return { state: 'error', description: `timed out after ${took}` };
+      return { state: 'error', description: record.exitCode === CHECK_BUSY_EXIT ? `busy, not run (waited ${took})` : `timed out after ${took}` };
     default:
       return { state: 'error', description: `could not run properly (exit ${record.exitCode ?? 'none'})` };
   }
@@ -275,6 +280,19 @@ function checkTimeout(label: string, durationMs: number, tool: string): GuardDec
       'was not moved. This is a runtime limit, not a problem with your change: do not change code and do not move the ' +
       `issue to Blocked. Call ${tool} again once; if it times out again, post a short issue comment and end your turn ` +
       'without changing the status. Symphony picks the issue up again later.',
+  };
+}
+
+/** A check that exited {@link CHECK_BUSY_EXIT}: handled like a timeout, but the agent learns that it never ran. */
+function checkBusy(label: string, durationMs: number, tool: string): GuardDecision {
+  return {
+    allow: false,
+    category: 'check_timeout',
+    message:
+      `The entry check for ${label} did not run: another run held its lock for ${Math.round(durationMs / 1000)}s (busy), so ` +
+      'the issue was not moved. This is a runtime limit, not a problem with your change: do not change code, do not ' +
+      `move the issue to Blocked and do not call ${tool} again now. Post a short issue comment and end your turn without ` +
+      'changing the status. Symphony picks the issue up again later.',
   };
 }
 
@@ -316,6 +334,7 @@ function decide(label: string, result: HookResult, tool: string): GuardDecision 
   if (result.timedOut) return checkTimeout(label, result.durationMs, tool);
   const clean = !result.timedOut && result.error === null && result.signal === null;
   if (clean && result.exitCode === CHECK_SKIPPED_EXIT) return { allow: true, note: CHECK_PASSED_NOTE };
+  if (clean && result.exitCode === CHECK_BUSY_EXIT) return checkBusy(label, result.durationMs, tool);
   if (clean && result.exitCode === 1) return { allow: false, category: 'check_failed', message: failedMessage(label, checkOutput(result), tool) };
   return checkError(label, describeFailure({ ...result, output: '' }), tool, checkOutput(result, ERROR_OUTPUT_LIMIT));
 }
@@ -461,7 +480,7 @@ export function createGuard(params: GuardParams): TransitionGuard {
         const result = await params.manager.runScript(check.name === null ? `check:${target}` : `check:${target}:${check.name}`, check.command, workspace, params.issue(), {
           signal: params.signal,
           timeoutMs: check.timeoutMs,
-          env: { ...extra, SYMPHONY_ROLE: role, SYMPHONY_TARGET_STATE: target, ...(check.name !== null ? { SYMPHONY_CHECK_NAME: check.name } : {}) },
+          env: { ...extra, SYMPHONY_ROLE: role, SYMPHONY_TARGET_STATE: target, SYMPHONY_CHECK_TIMEOUT_MS: String(check.timeoutMs), ...(check.name !== null ? { SYMPHONY_CHECK_NAME: check.name } : {}) },
         });
         await pending.settle();
         const decision = decide(label, result, tool);
