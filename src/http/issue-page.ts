@@ -1648,7 +1648,7 @@ ${PIPELINE_JS}
       extra.push(el('div', 'Blocked by', 'int-sub'));
       const list = el('ul', null, 'runs');
       for (const b of issue.blocked_by) {
-        const li = el('li', null, 'tone-' + (b.state === 'CLOSED' || b.state === 'MERGED' ? 'green' : 'red'));
+        const li = el('li', null, 'tone-' + (b.state === 'CLOSED' || b.state === 'MERGED' || b.state === 'SUB_ISSUES_CLOSED' ? 'green' : 'red'));
         const row = el('div', null, 'row');
         row.append(el('span', b.identifier || b.id || 'unknown'), el('span', String(b.state || '').toLowerCase()));
         li.append(row);

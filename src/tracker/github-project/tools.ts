@@ -559,5 +559,46 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
       ),
   };
 
-  return [getIssue, getIssueByNumber, setStatus, addComment, openPullRequest, createSubIssue];
+  /** Merges the version bump and the base branch into the default branch and tags the release (`release.ts`). */
+  const releaseQueue = new SerialQueue();
+  const publishReleaseTool: AgentToolSpec = {
+    name: 'publish_release',
+    description:
+      'Publish a release of the issue\'s repository once the version bump is pushed and its pull request into the base ' +
+      'branch is open. Symphony merges that pull request when its checks pass, merges the base branch into the default ' +
+      'branch with a pull request "Release vX.Y.Z", then creates the tag vX.Y.Z and the GitHub release with your notes. ' +
+      'The bump may only change the files you list and CHANGELOG.md. Every step is skipped when it is already done, so ' +
+      'calling it again with the same arguments continues where it stopped. Result status: published (Symphony posted ' +
+      'the release report, closed the issue and moved it to the done column), pending (checks still running: call ' +
+      'again), failed (reason says why; nothing after the failed step happened).',
+    inputSchema: {
+      version: z.string().min(1).describe('The new version, X.Y.Z or vX.Y.Z; must be higher than the last v* tag'),
+      pull_request: z.number().int().positive().describe('Number of the version-bump pull request into the base branch'),
+      notes: z.string().min(1).describe('Release notes (Markdown): body of the release pull request and of the GitHub release'),
+      files: z.array(z.string().min(1)).describe('The version files the bump changes besides CHANGELOG.md (e.g. package.json, package-lock.json)'),
+    },
+    mutates: true,
+    publishesReleases: true,
+    execute: (args, context) =>
+      guarded(context, (ref) =>
+        releaseQueue.run(async () => {
+          if (adapter.settings.release === null) {
+            return fail('not_allowed', 'releases are off: set tracker.provider.release.enabled (SYMPHONY_RELEASE_ENABLED=true) to let a role publish them');
+          }
+          const problem = markerProblem(String(args.notes ?? ''));
+          if (problem !== null) return problem;
+          const result = await adapter.publishRelease(context.issue, {
+            repository: ref.repository,
+            issueNumber: ref.number,
+            version: String(args.version),
+            pullRequest: Number(args.pull_request),
+            notes: String(args.notes),
+            files: Array.isArray(args.files) ? args.files.map(String) : [],
+          });
+          return ok(result);
+        }),
+      ),
+  };
+
+  return [getIssue, getIssueByNumber, setStatus, addComment, openPullRequest, createSubIssue, publishReleaseTool];
 }

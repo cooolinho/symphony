@@ -889,6 +889,20 @@ describe('roles config', () => {
       assert.equal(invalid({ sub_issue_status: 'Ready', wait_for_sub_issues: true }), '');
     });
 
+    it('parses publishes_releases, off by default, only for a writable role with commands', () => {
+      const releaser = { commands: ['release'], states: ['Ready', 'In progress'], publishes_releases: true };
+      const found = resolve({ ...base, roles: { ...valid, releaser } }).roles?.find((role) => role.name === 'releaser');
+      assert.equal(found?.publishesReleases, true);
+      assert.ok(roles().every((role) => role.publishesReleases === false));
+      const invalid = (extra: Record<string, unknown>) => messageOf({ ...base, roles: { ...valid, auditor: { ...auditor, ...extra } } });
+      assert.match(invalid({ publishes_releases: true, read_only: true }), /roles\.auditor\.publishes_releases needs read_only: false/);
+      assert.match(invalid({ publishes_releases: 'yes' }), /roles\.auditor\.publishes_releases must be true or false/);
+      assert.match(
+        messageOf({ ...base, roles: { ...valid, developer: { ...valid.developer, publishes_releases: true } } }),
+        /roles\.developer\.publishes_releases needs roles\.developer\.commands/,
+      );
+    });
+
     it('checks a role sub_issue_status against the board columns', () => {
       const config = resolve({ ...base, roles: { ...valid, auditor: { ...auditor, sub_issue_status: 'Redy' } } });
       assert.deepEqual(unknownBoardColumns(config, ['Ready', 'In progress', 'Agent review']), [
@@ -1431,7 +1445,7 @@ describe('role subagents', () => {
 
   it('splits the subagents by role list, read-only policy and integration prefix', () => {
     const agents = pluginAgents([path.join(dir, '.claude')]);
-    const role = (overrides: Partial<RoleConfig>) => ({ name: 'r', states: [], readOnly: false, mayMoveTo: null, result: null, onResult: {}, onCheckFailed: null, onMissingResult: null, onRoundLimit: null, modelLabel: 'apply' as const, effortLabel: 'apply' as const, maxTurns: null, commands: null, runChecks: true, maxSubIssues: null, subIssueStatus: null, waitForSubIssues: false, agents: null, brain: 'off' as const, brainApprovedWrites: true, claude: {}, ...overrides });
+    const role = (overrides: Partial<RoleConfig>) => ({ name: 'r', states: [], readOnly: false, mayMoveTo: null, result: null, onResult: {}, onCheckFailed: null, onMissingResult: null, onRoundLimit: null, modelLabel: 'apply' as const, effortLabel: 'apply' as const, maxTurns: null, commands: null, runChecks: true, maxSubIssues: null, subIssueStatus: null, waitForSubIssues: false, publishesReleases: false, agents: null, brain: 'off' as const, brainApprovedWrites: true, claude: {}, ...overrides });
     const names = (split: { allowed: Array<{ name: string }>; denied: Array<{ name: string }> }) => [split.allowed.map((a) => a.name), split.denied.map((a) => a.name)];
     assert.deepEqual(names(sessionAgents(agents, null, ['laravel-'], ['laravel-'])), [['laravel-architect', 'laravel-filament-developer', 'reader'], []]);
     assert.deepEqual(names(sessionAgents(agents, null, ['laravel-'], [])), [['reader'], ['laravel-architect', 'laravel-filament-developer']]);

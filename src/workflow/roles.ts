@@ -84,6 +84,11 @@ export interface RoleConfig {
    */
   waitForSubIssues: boolean;
   /**
+   * True grants the `publish_release` tool (only with `tracker.provider.release.enabled`): the role merges its version
+   * bump, the base branch into the default branch, and tags a GitHub release. Needs `commands` and `read_only: false`.
+   */
+  publishesReleases: boolean;
+  /**
    * Plugin subagents (`agents/<name>.md`, names without the plugin prefix) the role may call; null = every one the
    * session may use. Read-only roles never get subagents that can edit files.
    */

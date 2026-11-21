@@ -442,6 +442,7 @@ resolved once and kept for the whole run (an issue no role serves runs as `defau
 - **Checks:** `run_checks: false` skips the [`checks.on_enter`](#transition-guard) scripts for the role's status changes.
 - **Tools:** a role with `max_sub_issues` gets the tracker tool that creates sub-issues; other roles do not see it.
   `sub_issue_status` picks the column those sub-issues land in.
+  A role with `publishes_releases` gets `publish_release`; other roles do not see it.
 - **Waves:** `wait_for_sub_issues: true` holds the role's issues back while any of their sub-issues is open (see
   [Waves](#waves-wait_for_sub_issues)).
 - **Subagents:** `agents` lists the plugin subagents the role may start; the others are denied for its sessions (see
@@ -495,6 +496,7 @@ roles:
 | `max_sub_issues` | none | Integer 1–100 (GitHub's limit): how many sub-issues the role may have open under its issue at once, counting the sub-issues of those (the whole tree when the role creates epics with `parent`). Setting it gives the role the GitHub tool `create_sub_issue` ([github-project.md](adapters/github-project.md#agent-tools)). |
 | `sub_issue_status` | `tracker.provider.sub_issue_status` | Column for the sub-issues this role creates. Unlike the provider setting it may be an active column, so the sub-issues start without a human; this is the deliberate opt-in for autonomous roles such as the autopilot. Never a terminal column; needs `max_sub_issues`. Checked against the board like the other columns. |
 | `wait_for_sub_issues` | `false` | `true` dispatches the role's issues only while none of their sub-issues is open. See [Waves](#waves-wait_for_sub_issues). |
+| `publishes_releases` | `false` | `true` gives the role the GitHub tool `publish_release` ([github-project.md](adapters/github-project.md#releases)), which merges into the default branch and tags a release. Only with [`tracker.provider.release.enabled`](adapters/github-project.md#releases); needs `commands` and `read_only: false`. The shipped `releaser` (`/release`) sets it. |
 | `brain_approved_writes` | `true` | Boolean, only with `brain: write`. `false` makes `brain_write` and `brain_append` reject an approved note and any `status: approved` (reason `approved_readonly` / `approved_status`); `true` adds no gate (approved notes stay read-only for agents by the general rule). The shipped `brain-gardener` sets `false`. See [brain.md](brain.md#gardener). |
 | `brain` | `off` | String, one of `off`, `read`, `write`. Brain tools of the role's sessions: `off` none, `read` only `brain_search`, `brain_read`, `brain_list`, `brain_vitals`, `write` also `brain_write` and `brain_append`. Only has an effect with [`brain.enabled`](#brain); without it no role gets brain tools. Roles are never given the vault as a directory. The shipped `WORKFLOW.md` sets `write` for `issue-analyst`, `architect`, `reviewer` and `brain-gardener`, `read` for `developer`, `test-engineer` and `security-auditor`; `docs` and the command roles stay `off`. An existing `WORKFLOW.md` without the field gives no role brain tools anymore. Roles with `read` or `write` get the prompt section `roles/brain.md`. See [brain.md](brain.md#role-switch). |
 | `agents` | all (the shipped roles list theirs explicitly) | Plugin subagents (`agents/<name>.md` in [`claude.plugins`](#claude), names without the plugin prefix, e.g. `[laravel-code-reviewer]`) the role may start; `[]` allows none. See [Subagents per role](#subagents-per-role). |
@@ -983,8 +985,36 @@ arguments, e.g. `/refactoring app/Filament`), Symphony treats it as a command. T
   `respect_blockers` still applies.
 
 The shipped `WORKFLOW.md` defines the `auditor` role for `/refactoring`, the `autopilot` role for `/auto-code`, the
-`analyst` role for `/concept` and the `planner` role for `/plan`, and ships the skills `refactoring`, `refactor-safely`,
-`auto-code`, `concept` and `plan` in `.claude/skills/` (see [agent-claude.md](agent-claude.md#skills-and-plugins)).
+`analyst` role for `/concept`, the `planner` role for `/plan`, the `brain-gardener` for `/brain-garden` and the
+`releaser` for `/release` (see [Releases per issue](#releases-per-issue-release)), and ships the skills `refactoring`,
+`refactor-safely`, `auto-code`, `concept`, `plan`, `brain-garden` and `release` in `.claude/skills/` (see
+[agent-claude.md](agent-claude.md#skills-and-plugins)).
+
+#### Releases per issue (`/release`)
+
+An issue whose first line is `/release` (or `/release v2.3.0`) turns everything merged into `base_branch` since the
+last `vX.Y.Z` tag into a new version, without a human in between. Put it on the board together with the work it
+releases, all in Ready, and let it wait with *Blocked by*:
+
+```
+/release
+Version after the epics E18–E26.
+Blocked by #181, #182, #189
+```
+
+Symphony starts it only once every blocker is resolved; an epic counts as resolved once all its sub-issues are closed,
+even while the epic itself is open (see [Dependencies](adapters/github-project.md#dependencies)). The `releaser` then
+follows the skill `release`: it reads the changes since the last tag, picks the version (the argument, else Semantic
+Versioning from the `Type:` labels and breaking changes), bumps the version files it finds (the project's instructions
+first, else `package.json`/`package-lock.json`, `composer.json`, `config/app.php`, `VERSION`) and `CHANGELOG.md` on
+`release/vX.Y.Z`, and opens a pull request into `base_branch`. [`publish_release`](adapters/github-project.md#releases)
+merges it, merges `base_branch` into the default branch (`Release vX.Y.Z`), tags the merge commit and creates the
+GitHub release; then Symphony posts the `## Release Report`, closes the issue and moves it to Done. Every step is
+skipped when it is already done, so a release that stopped (pending checks, a session that ended) continues when the
+issue goes back to Ready.
+
+It needs `tracker.provider.release.enabled: true` (`SYMPHONY_RELEASE_ENABLED=true`); without it `publish_release`
+refuses and the issue ends in Blocked. Agents still never move an issue to a terminal column themselves.
 
 #### Subagents per role
 

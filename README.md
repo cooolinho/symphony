@@ -47,7 +47,7 @@ Stages an issue does not need are skipped without a session. Settings and prompt
 - **Checks and merge gate:** lint, analysis and tests before every handoff; the repository's CI before the merge
   ([merge gate](docs/adapters/github-project.md#merge-gate))
 - **Model and effort per issue** by label (`Model: opus`, `Effort: high`) ([usage](docs/usage.md#choosing-the-model-per-issue))
-- **Issue commands** such as `/plan`, `/concept`, `/refactoring` and the `/auto-code` autopilot ([usage](docs/usage.md))
+- **Issue commands** such as `/plan`, `/concept`, `/refactoring`, the `/auto-code` autopilot and `/release`, which turns finished epics into a version, tag and GitHub release ([usage](docs/usage.md#release-per-issue-release))
 - **Live dashboard** with team view, change feed, statistics and a JSON API ([dashboard](docs/usage.md#dashboard-and-api))
 - **Knowledge vault (brain)** the agents share, reviewed by you, also in Obsidian ([brain](docs/brain.md))
 - **Laravel Boost** and one database per workspace for Laravel apps ([Laravel](docs/laravel-repositories.md))

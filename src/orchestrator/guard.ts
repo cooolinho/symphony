@@ -678,7 +678,8 @@ export function createGuard(params: GuardParams): TransitionGuard {
 }
 
 /**
- * The tools a session of `role` on `issue` may use: tools that create sub-issues only for a role with `max_sub_issues`,
+ * The tools a session of `role` on `issue` may use: `publish_release` only for a role with `publishes_releases`, tools
+ * that create sub-issues only for a role with `max_sub_issues`,
  * and for a role that reports a design only on an issue it may split into work packages (`subIssueLimit`). A role with
  * `result` hands off through `resultTool` (`report_result`, see `createResultTool`) instead of the adapter's tools that
  * move the issue to a column the agent names (`set_status`); it never gets those, with or without `resultTool`.
@@ -691,7 +692,13 @@ export function toolsForRole(
 ): AgentToolSpec[] {
   const subIssues = subIssueLimit(role, issue) !== null;
   const reportsResult = role?.result != null;
-  const allowed = specs.filter((spec) => (subIssues || spec.createsSubIssues !== true) && !(reportsResult && spec.transitionTarget !== undefined));
+  const releases = role?.publishesReleases === true;
+  const allowed = specs.filter(
+    (spec) =>
+      (subIssues || spec.createsSubIssues !== true) &&
+      (releases || spec.publishesReleases !== true) &&
+      !(reportsResult && spec.transitionTarget !== undefined),
+  );
   return reportsResult && resultTool !== null ? [...allowed, resultTool] : allowed;
 }
 

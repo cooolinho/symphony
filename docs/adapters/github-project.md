@@ -21,6 +21,7 @@ Every key accepts a whole-value `$NAME` reference; an unset or empty variable co
 | `sub_issue_status` | `Backlog` | Board column for sub-issues created by the `create_sub_issue` tool. Must not be an active or terminal state (`invalid_tracker_config`), so a human decides what gets worked on. A [role](../configuration.md#roles) can override it with its own `sub_issue_status`, which may be active. |
 | `base_branch` | none (the repository's default branch) | Branch agents branch from and open pull requests against, e.g. `develop`. Hooks get it as `SYMPHONY_BASE_BRANCH` (the shipped `after_create` clones it), the prompt as `issue.native_ref.base_branch`, and `open_pull_request` uses it when the agent names no `base`. |
 | `auto_merge` | off | Map; Symphony merges an issue's pull request when the issue enters a column. See [Auto-merge](#auto-merge). |
+| `release` | off | Map; lets a role with `publishes_releases` merge into the default branch and publish a release. See [Releases](#releases). |
 | `endpoint` | `https://api.github.com/graphql` | GraphQL endpoint (GitHub Enterprise Server). |
 | `request_timeout_ms` | `30000` | Per-request timeout. |
 | `request_retries` | `2` | Extra attempts for read queries after network errors, timeouts and HTTP 502/503/504 (waiting 1 s, 2 s, …). Mutations (status, comments, pull requests) are never retried automatically, so nothing is created twice; the agent gets the error and can retry. |
@@ -82,6 +83,11 @@ An issue waits while any of these is unresolved:
 3. **Sub-issues** of a parent issue: the parent waits until every sub-issue is closed (not for an issue that starts
    with a `/command`, see `respect_sub_issues`).
 
+A blocker that is an **epic** (an open issue with sub-issues) counts as resolved once all its sub-issues are closed,
+even if nobody closes the epic: GitHub never closes a parent issue on its own. Its state then reads
+`SUB_ISSUES_CLOSED` in `blocked_by`. So an issue can wait for whole epics, e.g. a [`/release`](../configuration.md#releases-per-issue-release)
+that is *blocked by* the epics it releases.
+
 Text references are resolved with one extra request per poll (`issueOrPullRequest`, 50 per request). A dependency
 is resolved when the issue is closed or the pull request is closed or merged. References that do not exist or are not
 readable are ignored, so a typo does not block an issue forever. In the Symphony workflow agents never close issues:
@@ -110,6 +116,7 @@ they create are sub-issues of that issue (`create_sub_issue`).
 | `add_comment` | `body`, `issue?` | yes | Posts a comment on the issue; returns its URL. With `issue` (a number) the comment goes to an ancestor of the session's issue instead: its parent, that issue's parent and so on, at most 5 levels, same repository (e.g. epic or concept issue). The chain is read fresh on each call; any other number (sibling, sub-issue, pull request, unknown, other repository) is rejected with `invalid_argument` naming the allowed numbers, and nothing is posted. A comment on an ancestor ends with `<sub>aus owner/repo#N</sub>` naming the session's issue, and must not use the headings `Concept Plan` or `Concept Report` (used by /concept). Text containing `<!-- symphony:` is rejected (`invalid_argument`), see [Stage-result markers](#stage-result-markers-and-the-bot-account). |
 | `open_pull_request` | `head`, `title`, `body?`, `base?`, `draft?` | yes | Opens a PR from an already pushed branch (base defaults to `base_branch`, else the default branch). An open PR for the same branch is returned instead of a duplicate (`created: false`). |
 | `create_sub_issue` | `title`, `body?`, `labels?`, `parent?`, `blocked_by?` | yes | Creates a sub-issue of the session's issue (or, with `parent`, of one of its open sub-issues) in the same repository, adds it to the board in the `sub_issue_status` column (the role's, else the provider's) and returns `{created, number, identifier, url, status, on_board, unknown_labels, remaining, warnings?}`; with `parent` it also returns `parent`, with `blocked_by` also `blocked_by` and `unknown_blockers`. Only offered to [roles](../configuration.md#roles) with `max_sub_issues`. Title and body with `<!-- symphony:` are rejected like in `add_comment`. See below. |
+| `publish_release` | `version`, `pull_request`, `notes`, `files` | yes | Publishes a release from a version-bump pull request into the base branch and returns `{status: published\|pending\|failed, step, reason, tag, release_url, merged: {bump, release}, next, issue_status?, warnings?}`. Only offered to [roles](../configuration.md#roles) with `publishes_releases`, and refuses (`not_allowed`) without [`release.enabled`](#releases). See [Releases](#releases). |
 
 `set_status` declares its target column (`transitionTarget`), so Symphony's
 [transition guard](../configuration.md#transition-guard) checks every call before the mutation is sent: terminal
@@ -270,6 +277,48 @@ is entered after the agents are done), `done_state` must be terminal and neither
 may be.
 `auto_merge` never merges into the default branch: what reaches it stays a human decision, e.g. through a release
 pull request from `base_branch`.
+
+## Releases
+
+`release` is the separate opt-in for releases into the default branch, used by the tool `publish_release` of a role
+with `publishes_releases` (the shipped `releaser`, issue command [`/release`](../configuration.md#releases-per-issue-release)).
+
+```yaml
+tracker:
+  provider:
+    base_branch: develop
+    release:
+      enabled: ${SYMPHONY_RELEASE_ENABLED:-false}
+      method: merge          # squash, merge or rebase; gitflow keeps the history: merge
+      done_state: Done       # column of the release issue once the release is published
+      opt_out_label: manual-merge
+      checks:
+        wait_ms: 240000      # per publish_release call; while checks are pending the agent calls again
+        poll_ms: 20000
+        ignore: []           # check names or "owner/repo:name" globs, like auto_merge.checks.ignore
+```
+
+`publish_release` (`version`, `pull_request`, `notes`, `files`) runs these steps; each one is skipped when it is
+already done, so a second call with the same arguments continues where the first stopped:
+
+1. **Preconditions.** `version` is `X.Y.Z` (or `vX.Y.Z`) and higher than the highest `v*` tag; the tag does not exist;
+   the notes are not empty; the release issue has no `opt_out_label`. If the GitHub release exists already, the call
+   reports `published` and does nothing else.
+2. **Version bump.** The pull request `pull_request` targets `base_branch` (the default branch without one) and changes
+   only `files` and `CHANGELOG.md`, so no code reaches the default branch past the review; it is not a draft and has
+   no `opt_out_label`. Symphony waits for its checks (the same evaluation as the [merge gate](#merge-gate)) and merges
+   it with `method`.
+3. **Release pull request.** With a `base_branch` other than the default branch: a pull request `base_branch` →
+   default branch titled `Release vX.Y.Z` with the notes as body (an open one is reused, a merged one with that title
+   counts as done), checks awaited, merged with `method`.
+4. **Tag and release.** REST `POST /repos/{owner}/{repo}/releases` with `tag_name: vX.Y.Z` on the merge commit and the
+   notes as body. Then Symphony posts the `## Release Report` on the release issue, closes it and moves it to
+   `done_state`; failures there are `warnings`, the release stays published.
+
+Pending checks are read again every `poll_ms` until `wait_ms` is used up for the call; then it returns `pending`.
+Failing checks, a conflict, a refused merge or any precondition return `failed` with the `step` and the `reason`;
+nothing after that step happened. The token needs the `repo` scope (contents and pull requests: write). Branch
+protection of the default branch applies: a rule the token cannot satisfy makes the merge fail with GitHub's message.
 
 ## Errors
 
