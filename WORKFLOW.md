@@ -426,11 +426,13 @@ checks:
     Agent review: bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh"
     # The final gate before auto_merge: the repository's own CI, standing in for GitHub Actions.
     # ci: .symphony/checks/ci.sh of the base branch, else checks/laravel.sh --full (skipped without a Laravel app).
-    # prod-smoke: .symphony/checks/prod-smoke.sh of the base branch, one run per repository at a time; skipped without
-    # one. Both get the Docker daemon and MySQL of the compose profile "ci" (docs/docker.md) when it runs.
+    # prod-smoke: .symphony/checks/prod-smoke.sh of the base branch; skipped without one. Both get the Docker daemon and
+    # MySQL of the compose profile "ci" (docs/docker.md) when it runs. --lock: one run of each per repository at a time
+    # (parallel runs slow each other into the timeout); a run that finds the lock taken for SYMPHONY_CHECK_LOCK_WAIT_S
+    # (default 900 s, at most half its timeout_ms) is busy and runs again later, after a backoff.
     In review:
       - name: ci
-        command: bash "$SYMPHONY_WORKFLOW_DIR/checks/repo.sh" ci -- bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh" --full
+        command: bash "$SYMPHONY_WORKFLOW_DIR/checks/repo.sh" --lock ci -- bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh" --full
         timeout_ms: ${SYMPHONY_CI_TIMEOUT_MS:-1200000}
       - name: prod-smoke
         command: bash "$SYMPHONY_WORKFLOW_DIR/checks/repo.sh" --lock prod-smoke

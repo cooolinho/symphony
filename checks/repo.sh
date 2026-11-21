@@ -5,7 +5,10 @@
 #
 #   repo.sh [--lock] <name> [-- fallback command…]
 #
-# --lock runs one check of this name per repository at a time (fixed compose projects, ports and networks).
+# --lock runs one check of this name per repository at a time (fixed compose projects, ports and networks);
+# SYMPHONY_CHECK_LOCK_SCOPE=host makes it one per host, across repositories. It waits at most
+# SYMPHONY_CHECK_LOCK_WAIT_S seconds (default 900), never more than half of the check's SYMPHONY_CHECK_TIMEOUT_MS,
+# so the run keeps the other half; when the wait ends without the lock it exits 75 (busy: Symphony retries later).
 # With SYMPHONY_CI_DOCKER_HOST (compose profile "ci") it sets DOCKER_HOST, DOCKER_TLS_VERIFY and DOCKER_CERT_PATH for
 # the script, plus SYMPHONY_DOCKER_HOST_IP, the address of ports the daemon publishes. Agents never get these.
 set -u
@@ -55,10 +58,31 @@ if [ -n "${SYMPHONY_CI_DOCKER_HOST:-}" ]; then
 fi
 
 if $lock; then
+  command -v flock >/dev/null 2>&1 || env_problem "flock not found"
   locks="${TMPDIR:-/tmp}/symphony-checks"
   mkdir -p "$locks" || env_problem "cannot create $locks"
-  repository=${SYMPHONY_ISSUE_REPOSITORY:-$(basename "$PWD")}
-  # The lock goes with the process: a check killed at its timeout releases it.
-  command=(flock "$locks/${repository//\//_}-$name.lock" "${command[@]}")
+  case "${SYMPHONY_CHECK_LOCK_SCOPE:-repository}" in
+    repository)
+      repository=${SYMPHONY_ISSUE_REPOSITORY:-$(basename "$PWD")}
+      lockfile="$locks/${repository//\//_}-$name.lock"
+      ;;
+    host) lockfile="$locks/host-$name.lock" ;;
+    *) env_problem "SYMPHONY_CHECK_LOCK_SCOPE must be repository or host, not ${SYMPHONY_CHECK_LOCK_SCOPE}" ;;
+  esac
+  wait_s=${SYMPHONY_CHECK_LOCK_WAIT_S:-900}
+  [[ "$wait_s" =~ ^[0-9]+$ ]] || env_problem "SYMPHONY_CHECK_LOCK_WAIT_S must be whole seconds, not $wait_s"
+  if [[ "${SYMPHONY_CHECK_TIMEOUT_MS:-}" =~ ^[0-9]+$ ]] && [ "$wait_s" -gt $((SYMPHONY_CHECK_TIMEOUT_MS / 2000)) ]; then
+    wait_s=$((SYMPHONY_CHECK_TIMEOUT_MS / 2000))
+  fi
+  # The lock goes with the process: a check killed at its timeout releases it. The descriptor stays open for the
+  # command only, so its children (compose, tests) hold the lock until the check ends.
+  exec 9>"$lockfile" || env_problem "cannot open $lockfile"
+  started=$SECONDS
+  if ! flock -w "$wait_s" 9; then
+    echo "busy: another \"$name\" check held $lockfile for ${wait_s}s; not run, Symphony retries later"
+    exit "$BUSY_EXIT"
+  fi
+  waited=$((SECONDS - started))
+  [ "$waited" -gt 0 ] && echo "== $name: waited ${waited}s for $lockfile"
 fi
 "${command[@]}"

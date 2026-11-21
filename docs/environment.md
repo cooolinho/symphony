@@ -89,8 +89,10 @@ How many sub-issues a role may file per run.
 | `SYMPHONY_MERGE_CHECKS_TIMEOUT_MS` | `3600000` | How long the merge gate waits for them. |
 | `SYMPHONY_MERGE_IGNORE_CHECKS` | – | Checks to disregard, e.g. `acme/app:ci, acme/app:prod-smoke`. |
 | `SYMPHONY_CHECKS_REPORT_STATUS` | `false` | The final gate before the merge (`checks.on_enter` "In review": the named checks `ci` and `prod-smoke`). `true` reports them as commit statuses `symphony/ci` and `symphony/prod-smoke`; `SYMPHONY_PUBLIC_URL` links them to the dashboard. |
-| `SYMPHONY_CI_TIMEOUT_MS` | `1200000` | Time limit of `ci`; `ci` and `prod-smoke` together must stay below `claude.turn_timeout_ms` (1 h). |
+| `SYMPHONY_CI_TIMEOUT_MS` | `1200000` | Time limit of `ci`, including a wait for its lock; `ci` and `prod-smoke` together must stay below `claude.turn_timeout_ms` (1 h). |
 | `SYMPHONY_SMOKE_TIMEOUT_MS` | `1800000` | Time limit of `prod-smoke`. |
+| `SYMPHONY_CHECK_LOCK_WAIT_S` | `900` | `checks/repo.sh --lock` (`ci`, `prod-smoke`): how long a run waits for another run of the same check; never more than half its time limit. Then it exits 75 (busy) and the issue continues after a backoff, see [repository checks](configuration.md#repository-checks-checksreposh). |
+| `SYMPHONY_CHECK_LOCK_SCOPE` | `repository` | `host`: one run of each locked check on the whole host, across repositories, for a host whose CPUs several CI runs overload. |
 | `SYMPHONY_TEST_PARALLEL` | – | Fast entry checks (Testing, Agent review): `php artisan test` in n processes if `vendor/bin/paratest` exists (installs nothing; a composer `test` script wins). |
 | `SYMPHONY_CI_PARALLEL` | – | The same for `checks/laravel.sh --full` (the `ci` gate); `--full` installs a paratest the project requires. |
 | `SYMPHONY_CI_DB` | – | `mysql`: `checks/laravel.sh --full` runs the tests against a MySQL database of its own (`SYMPHONY_MYSQL_*`), dropped afterwards. |

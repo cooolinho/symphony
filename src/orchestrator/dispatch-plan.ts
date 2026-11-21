@@ -129,6 +129,7 @@ function waitingRetryReason(retry: PlanRetry): PlanReason {
     if (limit.hits <= limit.maxRetries) return { code: 'session_limit', text: `session limit: retry ${limit.hits} of ${limit.maxRetries} at ${at}` };
     return { code: 'session_limit', text: `session limit, reset time unknown: retry at ${at}` };
   }
+  if (retry.kind === 'continuation') return { code: 'backoff', text: `continues at ${at}, after a timed-out entry check` };
   return { code: 'backoff', text: `retry ${retry.attempt} after a failure at ${at}` };
 }
 

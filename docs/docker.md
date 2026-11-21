@@ -550,6 +550,10 @@ then `docker compose up -d`. `symphony` waits until both sidecars are healthy (`
 - **Name `symphony-ci-mysql`:** The `symphony` container is also on the Traefik network. If another project there has
   a service called `mysql`, Docker's DNS may answer with that one, and the checks would create and drop databases on
   a foreign server. So the sidecar has a name of its own on the `ci` network; keep `SYMPHONY_MYSQL_HOST` on it.
+- **One run at a time:** the shipped `ci` and `prod-smoke` run through `checks/repo.sh --lock`, one run of each per
+  repository at a time; parallel test suites on one host slow each other into their timeout.
+  `SYMPHONY_CHECK_LOCK_SCOPE=host` serialises them across repositories too, `SYMPHONY_CHECK_LOCK_WAIT_S` bounds the
+  wait (see [repository checks](configuration.md#repository-checks-checksreposh)).
 - **Resources:** `dind` is limited to 4 GB, `mysql` to 3 GB including its tmpfs (`mem_limit`). Image builds need disk space in
   `dind-data`.
 

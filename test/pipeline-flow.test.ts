@@ -7,6 +7,7 @@ import type { StartSessionParams, TurnResult } from '../src/agent/types.ts';
 import { PricingStore } from '../src/costs/pricing.ts';
 import { HistoryLog, readHistory } from '../src/history/history.ts';
 import { Logger } from '../src/log.ts';
+import { CHECK_TIMEOUT_BASE_DELAY_MS } from '../src/orchestrator/check-backoff.ts';
 import { CONTINUATION_DELAY_MS } from '../src/orchestrator/eligibility.ts';
 import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
 import { RESULT_RECORDED_NOTE } from '../src/orchestrator/result-tool.ts';
@@ -785,7 +786,15 @@ describe('failure and retry paths of result-driven stages', () => {
         },
       },
     );
-    await run(h);
+    // The run that ended on the timed-out check continues after a backoff, not after the usual 1 s, and holds no slot.
+    await run(h, () => h.timers.delays().includes(CHECK_TIMEOUT_BASE_DELAY_MS));
+    assert.ok(!h.timers.delays().includes(CONTINUATION_DELAY_MS), 'no immediate continuation');
+    assert.equal(h.orchestrator.snapshot().retrying[0]?.kind, 'continuation');
+    const waiting = h.orchestrator.snapshot().queue.find((item) => item.issue_id === ISSUE);
+    assert.equal(waiting?.status, 'waiting');
+    assert.match(waiting?.reason.text ?? '', /after a timed-out entry check/);
+    await fireRetry(h, CHECK_TIMEOUT_BASE_DELAY_MS);
+    await settle(h);
 
     assert.deepEqual(h.reports.slice(0, 2).map((report) => denial(report)?.category), ['check_timeout', 'check_timeout']);
     assert.match(denial(h.reports[0])?.message ?? '', /Call report_result again once[\s\S]*Symphony picks the issue up again later/);
