@@ -1,7 +1,7 @@
 import type { Issue, TrackerAdapter } from '../tracker/types.ts';
 import { errorMessage } from '../util/errors.ts';
 import type { WatchdogMode } from '../workflow/config.ts';
-import type { Decision, Diagnosis } from './decide.ts';
+import { openForRecheck, type BaseState, type Decision, type Diagnosis } from './decide.ts';
 import { encodeWatchdogMarker, type WatchdogAction, type WatchdogMarker } from './marker.ts';
 
 export interface ActInput {
@@ -14,6 +14,11 @@ export interface ActInput {
   limitLabel: string;
   blockedAt: Date | null;
   promptHash: string;
+  /** 0 for the first diagnosis of the block, 1.. for a re-check. */
+  recheck?: number;
+  maxRechecks?: number;
+  /** Head of the base branch at the diagnosis (recorded in the marker for the next re-check). */
+  base?: BaseState | null;
   now: Date;
 }
 
@@ -37,6 +42,14 @@ export function renderWatchdogComment(input: Omit<ActInput, 'adapter' | 'issue'>
   const { decision, diagnosis } = input;
   const target = decision.action === 'resume' ? decision.target : null;
   const attempt = decision.action === 'resume' ? decision.attempt : 0;
+  const recheck = input.recheck ?? 0;
+  const maxRechecks = input.maxRechecks ?? 0;
+  const ruled = decision.action === 'resume' ? 'resume' : decision.action === 'escalate' ? 'escalate' : null;
+  const branch = input.base?.branch ?? 'the base branch';
+  const next =
+    ruled === 'escalate' && openForRecheck({ decision: ruled, cause: diagnosis.cause }) && recheck < maxRechecks
+      ? ` · re-checked once \`${branch}\` moves (${maxRechecks - recheck} left)`
+      : '';
   const outcome =
     action === 'resume'
       ? `→ back to "${target}" (automatic resume ${attempt}/${input.maxResumes})`
@@ -51,13 +64,17 @@ export function renderWatchdogComment(input: Omit<ActInput, 'adapter' | 'issue'>
     blocked_at: input.blockedAt?.toISOString() ?? null,
     prompt_hash: input.promptHash,
     created_at: input.now.toISOString(),
+    decision: ruled,
+    recheck,
+    base_sha: input.base?.sha ?? null,
   };
+  const round = recheck > 0 ? ` · re-check ${recheck}/${maxRechecks}` : '';
   return [
     '### 🛟 Watchdog',
     '',
     diagnosis.comment.trim(),
     '',
-    `<sub>Symphony watchdog · cause \`${diagnosis.cause}\` · confidence ${diagnosis.confidence} · ${outcome} · prompt ${input.promptHash}</sub>`,
+    `<sub>Symphony watchdog · cause \`${diagnosis.cause}\` · confidence ${diagnosis.confidence}${round} · ${outcome}${next} · prompt ${input.promptHash}</sub>`,
     '',
     encodeWatchdogMarker(marker),
   ].join('\n');

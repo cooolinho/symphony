@@ -1269,6 +1269,7 @@ Settings of the [Blocked watchdog](watchdog.md), a separate process (`src/watchd
 | `settle_ms` | integer ≥ 0 | `120000` | Wait after the issue entered the blocked column |
 | `cooldown_ms` | integer ≥ 0 | `600000` | Least time between two resumes of one issue, and before a `wait` or a failed session is retried |
 | `max_resumes` | integer ≥ 0 | `2` | Automatic resumes since the newest human comment; then the issue stays blocked with `needs-human` |
+| `max_rechecks` | integer ≥ 0 | `2` | Follow-up diagnoses of one block escalated with cause `environment` or `infra_transient`, each only after the base branch moved and its checks are not red (docs/watchdog.md, "Re-check"); `0` = one diagnosis per block |
 | `prompt` | path | `roles/watchdog.md` | Liquid prompt of the diagnosis session, relative to `WORKFLOW.md`; read anew for every diagnosis |
 | `api_url` | http(s) URL | none | The orchestrator, for `/api/v1/state` (health, model holds) |
 | `log_file` | path | none | The orchestrator's log file (`--log-file`, `SYMPHONY_LOG_FILE`), quoted in the evidence |

@@ -11,14 +11,15 @@ import { resolveConfig } from '../src/workflow/config.ts';
 import type { ResultMeta, StageResult } from '../src/workflow/results.ts';
 import type { RoleConfig } from '../src/workflow/roles.ts';
 import { classifyBlock, roleColumn } from '../src/watchdog/case.ts';
-import { decide, type DecideInput, type Diagnosis } from '../src/watchdog/decide.ts';
+import { baseState, entryChecksOn, rollupChecks } from '../src/watchdog/base.ts';
+import { decide, planRecheck, type BaseState, type DecideInput, type Diagnosis, type PriorDiagnosis } from '../src/watchdog/decide.ts';
 import { decodeWatchdogMarker, encodeWatchdogMarker, isWatchdogResume, watchdogEntries, type WatchdogMarker } from '../src/watchdog/marker.ts';
 
 const VIEWER = 'symphony-bot';
 const ACTIVE = ['Ready', 'Design', 'In progress', 'Testing', 'Documentation', 'Agent review', 'Security review'];
 
 function marker(over: Partial<WatchdogMarker> = {}): WatchdogMarker {
-  return { action: 'resume', cause: 'infra_transient', target: 'In progress', attempt: 1, blocked_at: null, prompt_hash: 'abc', created_at: '2026-11-12T10:00:00.000Z', ...over };
+  return { action: 'resume', cause: 'infra_transient', target: 'In progress', attempt: 1, blocked_at: null, prompt_hash: 'abc', created_at: '2026-11-12T10:00:00.000Z', decision: 'resume', recheck: 0, base_sha: null, ...over };
 }
 
 function comment(body: string, at: string, author: string | null = VIEWER): IssueComment {
@@ -48,6 +49,16 @@ describe('watchdog marker', () => {
     const body = encodeWatchdogMarker(marker());
     const entries = watchdogEntries([comment(body, '2026-11-12T10:00:00Z'), comment(body, '2026-11-12T10:01:00Z', 'someone')], VIEWER);
     assert.equal(entries.length, 1);
+  });
+
+  it('reads markers written before re-checks: decision from the action, re-check 0, no base head', () => {
+    const old = { action: 'escalate', cause: 'environment', target: null, attempt: 0, blocked_at: null, prompt_hash: 'x', created_at: '2026-11-12T10:00:00.000Z' };
+    const decoded = decodeWatchdogMarker(`<!-- symphony:watchdog:v1 ${Buffer.from(JSON.stringify(old)).toString('base64url')} -->`);
+    assert.equal(decoded?.decision, 'escalate');
+    assert.equal(decoded?.recheck, 0);
+    assert.equal(decoded?.base_sha, null);
+    const comment = decodeWatchdogMarker(`<!-- symphony:watchdog:v1 ${Buffer.from(JSON.stringify({ ...old, action: 'comment' })).toString('base64url')} -->`);
+    assert.equal(comment?.decision, null);
   });
 
   it('only resume markers count as feedback', () => {
@@ -187,6 +198,79 @@ describe('decide', () => {
   });
 });
 
+describe('planRecheck', () => {
+  const now = new Date('2026-11-21T12:00:00Z');
+  const config = { maxRechecks: 2, cooldownMs: 600_000 };
+  const prior = (over: Partial<PriorDiagnosis> = {}): PriorDiagnosis => ({
+    decision: 'escalate',
+    cause: 'environment',
+    recheck: 0,
+    baseSha: 'aaa111',
+    at: new Date('2026-11-21T11:00:00Z'),
+    ...over,
+  });
+  const base = (over: Partial<BaseState> = {}): BaseState => ({ branch: 'develop', sha: 'bbb222', checks: 'passed', ...over });
+  const plan = (p: PriorDiagnosis | null, b: BaseState | null = base(), over: Partial<typeof config> = {}) => {
+    let reads = 0;
+    return planRecheck({ prior: p, config: { ...config, ...over }, now, readBase: async () => (reads++, b) }).then((result) => ({ ...result, reads }));
+  };
+
+  it('diagnoses a new block without reading the base', async () => {
+    assert.deepEqual(await plan(null), { action: 'diagnose', recheck: 0, reason: 'first diagnosis of the block', reads: 0 });
+  });
+
+  it('re-checks an environment or infra escalation once the base moved', async () => {
+    const result = await plan(prior());
+    assert.equal(result.action, 'diagnose');
+    assert.equal(result.action === 'diagnose' && result.recheck, 1);
+    assert.match(result.reason, /develop moved from aaa111 to bbb222/);
+    assert.equal((await plan(prior({ cause: 'infra_transient', recheck: 1 }))).action, 'diagnose');
+  });
+
+  it('does not re-check without a base change, a green base, or within the cooldown', async () => {
+    assert.equal((await plan(prior(), base({ sha: 'aaa111' }))).action, 'later');
+    assert.equal((await plan(prior(), base({ checks: 'failed' }))).action, 'later');
+    assert.equal((await plan(prior(), base({ checks: 'pending' }))).action, 'later');
+    assert.equal((await plan(prior(), null)).action, 'later');
+    const fresh = await plan(prior({ at: new Date('2026-11-21T11:55:00Z') }));
+    assert.deepEqual(fresh, { action: 'later', reason: 'cooldown since the last diagnosis', reads: 0 });
+    assert.equal((await plan(prior(), base({ checks: 'unknown' }))).action, 'diagnose');
+    // No head recorded (older diagnosis): only green checks are a reason.
+    assert.equal((await plan(prior({ baseSha: null }), base({ checks: 'unknown' }))).action, 'later');
+    assert.equal((await plan(prior({ baseSha: null }))).action, 'diagnose');
+  });
+
+  it('is final for other causes and decisions, and after max_rechecks', async () => {
+    assert.equal((await plan(prior({ cause: 'needs_human' }))).action, 'final');
+    assert.equal((await plan(prior({ decision: 'resume' }))).action, 'final');
+    assert.equal((await plan(prior({ decision: null }))).action, 'final');
+    const limit = await plan(prior({ recheck: 2 }));
+    assert.deepEqual(limit, { action: 'final', reason: '2 re-checks done (watchdog.max_rechecks 2)', reads: 0 });
+    assert.equal((await plan(prior(), base(), { maxRechecks: 0 })).action, 'final');
+  });
+});
+
+describe('base branch checks', () => {
+  const entry = (sha: string, ok: boolean, result = ok ? 'passed' : 'check_failed') => ({ ts: '2026-11-21T10:00:00Z', event: 'checks_finished', fields: { sha, ok: String(ok), result } });
+
+  it('maps GitHub status rollups', () => {
+    assert.equal(rollupChecks('SUCCESS'), 'passed');
+    assert.equal(rollupChecks('FAILURE'), 'failed');
+    assert.equal(rollupChecks('ERROR'), 'failed');
+    assert.equal(rollupChecks('PENDING'), 'pending');
+    assert.equal(rollupChecks(null), 'unknown');
+  });
+
+  it('falls back to Symphony entry checks on the base commit', () => {
+    assert.equal(entryChecksOn([entry('abc', true), entry('def', false)], 'abc'), 'passed');
+    assert.equal(entryChecksOn([entry('abc', true), entry('abc', false)], 'abc'), 'failed');
+    assert.equal(entryChecksOn([entry('abc', false, 'skipped')], 'abc'), null);
+    assert.equal(baseState({ branch: 'develop', sha: 'abc', rollup: 'unknown' }, [entry('abc', false)])?.checks, 'failed');
+    assert.equal(baseState({ branch: 'develop', sha: 'abc', rollup: 'passed' }, [entry('abc', false)])?.checks, 'passed');
+    assert.equal(baseState(null, []), null);
+  });
+});
+
 describe('watchdog config', () => {
   const resolve = (watchdog: unknown) =>
     resolveConfig({ tracker: { kind: 'github_project' }, ...(watchdog === undefined ? {} : { watchdog }) }, { workflowPath: '/srv/wf/WORKFLOW.md', env: {}, trackerDefaults });
@@ -195,14 +279,16 @@ describe('watchdog config', () => {
     const { watchdog } = resolve(undefined);
     assert.equal(watchdog.mode, 'observe');
     assert.equal(watchdog.maxResumes, 2);
+    assert.equal(watchdog.maxRechecks, 2);
     assert.equal(watchdog.model, 'fable');
     assert.equal(watchdog.prompt, '/srv/wf/roles/watchdog.md');
     assert.equal(watchdog.apiUrl, null);
   });
 
   it('reads every key and rejects unknown ones', () => {
-    const { watchdog } = resolve({ mode: 'act', interval_ms: 5000, max_resumes: 1, api_url: 'http://symphony:4000/', claude: { model: 'opus', effort: 'max', max_budget_usd: 2 } });
+    const { watchdog } = resolve({ mode: 'act', interval_ms: 5000, max_resumes: 1, max_rechecks: 0, api_url: 'http://symphony:4000/', claude: { model: 'opus', effort: 'max', max_budget_usd: 2 } });
     assert.equal(watchdog.mode, 'act');
+    assert.equal(watchdog.maxRechecks, 0);
     assert.equal(watchdog.apiUrl, 'http://symphony:4000');
     assert.equal(watchdog.model, 'opus');
     assert.equal(watchdog.maxBudgetUsd, 2);
