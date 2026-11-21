@@ -1,3 +1,4 @@
+import { boardColumnsTask, type BoardContext } from './board.ts';
 import type { GithubRestClient } from './github-rest.ts';
 import { labelsTask } from './labels.ts';
 import { laravelBoostTask } from './laravel-boost.ts';
@@ -8,6 +9,8 @@ export interface InitContext {
   repositories: string[];
   github: GithubRestClient;
   terminal: Terminal;
+  /** The board from GITHUB_PROJECT_NUMBER (and GITHUB_PROJECT_OWNER); undefined when it is not set. */
+  board?: BoardContext;
 }
 
 /** One entry of the repo-init menu. */
@@ -21,4 +24,4 @@ export interface InitTask {
 }
 
 /** The repo-init menu in display order. New setup steps are added here. */
-export const INIT_TASKS: readonly InitTask[] = [labelsTask, laravelBoostTask];
+export const INIT_TASKS: readonly InitTask[] = [labelsTask, laravelBoostTask, boardColumnsTask];

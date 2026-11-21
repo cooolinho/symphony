@@ -42,6 +42,7 @@ import { EMPTY_RESULTS, issueTemplateValue, renderPrompt } from '../workflow/tem
 import { writeAttachments, type AttachmentFile } from '../workspace/attachments.ts';
 import { changedFiles, commitStats, type CommitStat } from '../workspace/changes.ts';
 import { baselineCommit, changedFilesSince, isAncestor } from './changed-files.ts';
+import { integrateBase } from './integrate-base.ts';
 import { createGuard, guardTools, toolsForRole, type CheckCache, type CheckRecord, type GateRun, type GuardParams } from './guard.ts';
 import { createResultTool, resultReminder, type LessonFacts, type PathRule, type ResultToolAdapter, type ResultToolParams } from './result-tool.ts';
 import { reviewedFiles, securityBaseRef } from './security.ts';
@@ -77,6 +78,8 @@ export type WorkerOutcome =
       missingResult?: true;
       /** With `missingResult`: background tasks still running when the last turn ended (they end with the session). */
       backgroundTasks?: string[];
+      /** The run ended because the hand-off's entry check timed out or was busy: the continuation waits with backoff. */
+      checkTimedOut?: true;
     }
   | { kind: 'failed'; code: string; message: string; phase: RunPhase; sessionLimit?: SessionLimitInfo }
   | { kind: 'cancelled'; message: string };
@@ -662,6 +665,10 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       },
       onGateUpdate: (gate) => callbacks.gateUpdated(gate),
       onDenied: (target, message) => callbacks.transitionDenied(target, message),
+      integrateBase: () => {
+        const base = issue.native_ref?.base_branch;
+        return integrateBase(activeWorkspace.path, { base: typeof base === 'string' ? base : null, signal });
+      },
       ...checkStatusReporter(params.workflow.config, params.adapter, issue),
       onEvent: (event, message, detail) =>
         callbacks.agentEvent({
@@ -886,7 +893,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       // A hand-off whose entry check timed out is a runtime limit, not a missing result: no reminder, no
       // on_missing_result; the stage runs again in a later session.
       if (support !== null && checkTimedOut) {
-        return await finish({ kind: 'normal', turns: turn, reason: 'the entry check of the hand-off timed out (checks.timeout_ms)' });
+        return await finish({ kind: 'normal', turns: turn, reason: 'the entry check of the hand-off timed out (checks.timeout_ms)', checkTimedOut: true });
       }
       // A result-driven role that has not reported by the turn limit, or after the one reminder turn (turn 2), ends
       // the run: the orchestrator decides what happens to the issue.

@@ -9,6 +9,7 @@ import { humanFeedback } from '../src/orchestrator/stage-history.ts';
 import { trackerDefaults } from '../src/tracker/registry.ts';
 import type { Issue, IssueComment, TrackerAdapter } from '../src/tracker/types.ts';
 import { resolveConfig, type WatchdogMode } from '../src/workflow/config.ts';
+import type { BaseReader } from '../src/watchdog/base.ts';
 import type { Diagnosis } from '../src/watchdog/decide.ts';
 import { decodeWatchdogMarker } from '../src/watchdog/marker.ts';
 import { WatchdogPoller } from '../src/watchdog/poller.ts';
@@ -17,7 +18,19 @@ const VIEWER = 'symphony-bot';
 const NOW = new Date('2026-11-12T12:00:00Z');
 const MISSING = '**Stage ended without a result.** The developer session for "In progress" ended without calling `report_result` (after 20 turns)';
 
-function setup(mode: WatchdogMode, diagnosis: Partial<Diagnosis> = {}, promptText = 'Diagnose {{ issue.identifier }}: {{ block.kind }} from {{ block.from }}', reuseDir?: string) {
+interface SetupOptions {
+  readBase?: BaseReader | null;
+  clock?: { now: Date };
+  watchdog?: Record<string, unknown>;
+}
+
+function setup(
+  mode: WatchdogMode,
+  diagnosis: Partial<Diagnosis> = {},
+  promptText = 'Diagnose {{ issue.identifier }}: {{ block.kind }} from {{ block.from }}',
+  reuseDir?: string,
+  options: SetupOptions = {},
+) {
   const dir = reuseDir ?? fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-watchdog-'));
   const prompt = path.join(dir, 'watchdog.md');
   fs.writeFileSync(prompt, promptText);
@@ -25,7 +38,7 @@ function setup(mode: WatchdogMode, diagnosis: Partial<Diagnosis> = {}, promptTex
     {
       tracker: { kind: 'github_project', active_states: ['Ready', 'In progress', 'Agent review'], terminal_states: ['Done'] },
       workspace: { root: path.join(dir, 'workspaces') },
-      watchdog: { mode, prompt, settle_ms: 0 },
+      watchdog: { mode, prompt, settle_ms: 0, ...options.watchdog },
     },
     { workflowPath: path.join(dir, 'WORKFLOW.md'), env: {}, trackerDefaults },
   );
@@ -59,7 +72,7 @@ function setup(mode: WatchdogMode, diagnosis: Partial<Diagnosis> = {}, promptTex
     viewerLogin: async () => VIEWER,
     readResults: async () => [],
     postComment: async (_issue: Issue, body: string) => {
-      comments.push({ author: VIEWER, body, createdAt: new Date(NOW), url: `https://example.test/c${comments.length + 1}` });
+      comments.push({ author: VIEWER, body, createdAt: new Date(options.clock?.now ?? NOW), url: `https://example.test/c${comments.length + 1}` });
       return { url: null };
     },
     setStatus: async (_issue: Issue, column: string) => {
@@ -103,7 +116,8 @@ function setup(mode: WatchdogMode, diagnosis: Partial<Diagnosis> = {}, promptTex
     logDir: path.join(dir, 'state'),
     stateDir: path.join(dir, 'watchdog'),
     fetch: (async () => new Response('{}', { status: 503 })) as typeof fetch,
-    now: () => NOW,
+    now: () => options.clock?.now ?? NOW,
+    readBase: options.readBase ?? null,
   });
   return { poller, issue, config, comments, moves, labels, prompts, sessions, dir };
 }
@@ -203,5 +217,168 @@ describe('WatchdogPoller', () => {
     await t.poller.handle(t.issue, t.config);
     assert.match(t.prompts[0] ?? '', /## Your role: Blocked watchdog/);
     assert.match(t.prompts[0] ?? '', /How it was blocked: \*\*missing_result\*\* by the role `developer`, from the column "In progress"/);
+  });
+  describe('re-check of an environment escalation', () => {
+    const BROKEN: Partial<Diagnosis> = { cause: 'environment', cause_gone: false, target_column: null, comment: 'The test env on develop is broken.' };
+    const FIXED: Partial<Diagnosis> = { cause: 'environment', cause_gone: true, target_column: 'In progress', comment: 'develop is fixed, run the tests again.' };
+
+    function scenario(mode: WatchdogMode = 'act', watchdog: Record<string, unknown> = {}, reuseDir?: string) {
+      const diagnosis: Partial<Diagnosis> = { ...BROKEN };
+      const clock = { now: new Date(NOW) };
+      const head = { sha: 'aaaaaaa1111', rollup: 'failed' as 'passed' | 'failed' | 'pending' | 'unknown' };
+      let reads = 0;
+      const readBase: BaseReader = async (_repo, branch) => {
+        reads += 1;
+        return { branch: branch ?? 'develop', sha: head.sha, rollup: head.rollup };
+      };
+      const t = setup(mode, diagnosis, undefined, reuseDir, { readBase, clock, watchdog });
+      const later = (minutes: number) => {
+        clock.now = new Date(clock.now.getTime() + minutes * 60_000);
+      };
+      return { ...t, diagnosis, clock, head, later, reads: () => reads };
+    }
+
+    it('records the base head with an escalation and does not re-check while the base has not moved', async () => {
+      const t = scenario();
+      const first = await t.poller.handle(t.issue, t.config);
+      assert.equal(first?.decision, 'escalate');
+      assert.equal(first?.recheck, 0);
+      assert.equal(first?.base_sha, 'aaaaaaa1111');
+      const marker = decodeWatchdogMarker(t.comments.at(-1)?.body ?? '');
+      assert.equal(marker?.decision, 'escalate');
+      assert.equal(marker?.base_sha, 'aaaaaaa1111');
+      assert.match(t.comments.at(-1)?.body ?? '', /re-checked once `develop` moves \(2 left\)/);
+      Object.assign(t.diagnosis, FIXED);
+      t.head.rollup = 'passed';
+      t.later(30);
+      assert.equal(await t.poller.handle(t.issue, t.config), null);
+      assert.equal(t.sessions.length, 1);
+      assert.deepEqual(t.moves, []);
+    });
+
+    it('re-checks once the base branch moved and its checks are green, and resumes', async () => {
+      const t = scenario();
+      await t.poller.handle(t.issue, t.config);
+      Object.assign(t.diagnosis, FIXED);
+      t.head.sha = 'bbbbbbb2222';
+      t.head.rollup = 'passed';
+      t.later(30);
+      const event = await t.poller.handle(t.issue, t.config);
+      assert.equal(event?.decision, 'resume');
+      assert.equal(event?.recheck, 1);
+      assert.equal(event?.base_sha, 'bbbbbbb2222');
+      assert.deepEqual(t.moves, ['In progress']);
+      assert.equal(decodeWatchdogMarker(t.comments.at(-1)?.body ?? '')?.recheck, 1);
+      assert.match(t.comments.at(-1)?.body ?? '', /re-check 1\/2/);
+    });
+
+    it('waits while the new base head is red or its checks still run, and within the cooldown', async () => {
+      const t = scenario();
+      await t.poller.handle(t.issue, t.config);
+      t.head.sha = 'bbbbbbb2222';
+      t.later(5);
+      assert.equal(await t.poller.handle(t.issue, t.config), null, 'cooldown');
+      t.later(30);
+      assert.equal(await t.poller.handle(t.issue, t.config), null, 'red');
+      t.head.rollup = 'pending';
+      t.later(30);
+      assert.equal(await t.poller.handle(t.issue, t.config), null, 'pending');
+      assert.equal(t.sessions.length, 1);
+      t.head.rollup = 'unknown';
+      t.later(30);
+      assert.equal((await t.poller.handle(t.issue, t.config))?.recheck, 1, 'no signal: the moved head alone is the reason');
+    });
+
+    it('stops after watchdog.max_rechecks follow-up diagnoses', async () => {
+      const t = scenario('act', { max_rechecks: 1 });
+      await t.poller.handle(t.issue, t.config);
+      t.head.sha = 'bbbbbbb2222';
+      t.head.rollup = 'passed';
+      t.later(30);
+      const second = await t.poller.handle(t.issue, t.config);
+      assert.equal(second?.decision, 'escalate');
+      assert.equal(second?.recheck, 1);
+      assert.doesNotMatch(t.comments.at(-1)?.body ?? '', /re-checked once/);
+      t.head.sha = 'ccccccc3333';
+      t.later(30);
+      assert.equal(await t.poller.handle(t.issue, t.config), null);
+      assert.equal(t.sessions.length, 2);
+    });
+
+    it('max_rechecks 0 keeps one diagnosis per block', async () => {
+      const t = scenario('act', { max_rechecks: 0 });
+      await t.poller.handle(t.issue, t.config);
+      t.head.sha = 'bbbbbbb2222';
+      t.head.rollup = 'passed';
+      t.later(30);
+      assert.equal(await t.poller.handle(t.issue, t.config), null);
+      assert.equal(t.reads(), 1, 'no base read once the block is settled');
+    });
+
+    it('never re-checks a human cause', async () => {
+      const t = scenario();
+      Object.assign(t.diagnosis, { cause: 'needs_access' });
+      await t.poller.handle(t.issue, t.config);
+      t.head.sha = 'bbbbbbb2222';
+      t.head.rollup = 'passed';
+      t.later(30);
+      assert.equal(await t.poller.handle(t.issue, t.config), null);
+      assert.equal(t.sessions.length, 1);
+    });
+
+    it('counts re-checks across a restart, from the markers (act) and from events.jsonl (observe)', async () => {
+      const act = scenario('act', { max_rechecks: 1 });
+      await act.poller.handle(act.issue, act.config);
+      act.head.sha = 'bbbbbbb2222';
+      act.head.rollup = 'passed';
+      act.later(30);
+      assert.equal((await act.poller.handle(act.issue, act.config))?.recheck, 1);
+      // A new process sees only the comments: both diagnoses are there, the limit is reached.
+      const restarted = scenario('act', { max_rechecks: 1 });
+      restarted.comments.push(...act.comments.slice(1));
+      restarted.head.sha = 'ccccccc3333';
+      restarted.head.rollup = 'passed';
+      restarted.later(120);
+      assert.equal(await restarted.poller.handle(restarted.issue, restarted.config), null);
+      assert.equal(restarted.sessions.length, 0);
+
+      const observe = scenario('observe');
+      await observe.poller.handle(observe.issue, observe.config);
+      const again = scenario('observe', {}, observe.dir);
+      again.later(30);
+      assert.equal(await again.poller.handle(again.issue, again.config), null, 'base unchanged after the restart');
+      again.head.sha = 'bbbbbbb2222';
+      again.head.rollup = 'passed';
+      again.later(30);
+      assert.equal((await again.poller.handle(again.issue, again.config))?.recheck, 1);
+    });
+
+    it('the shipped roles/watchdog.md tells the session about the re-check', async () => {
+      const shipped = fs.readFileSync(path.join(import.meta.dirname, '..', 'roles', 'watchdog.md'), 'utf8');
+      const diagnosis: Partial<Diagnosis> = { ...BROKEN };
+      const clock = { now: new Date(NOW) };
+      const head = { sha: 'aaaaaaa1111' };
+      const t = setup('act', diagnosis, shipped, undefined, { clock, readBase: async () => ({ branch: 'develop', sha: head.sha, rollup: 'passed' }) });
+      await t.poller.handle(t.issue, t.config);
+      assert.match(t.prompts[0] ?? '', /Base branch: `develop` at aaaaaaa1111 \(checks: passed\)/);
+      assert.doesNotMatch(t.prompts[0] ?? '', /Re-check/);
+      head.sha = 'bbbbbbb2222';
+      clock.now = new Date(NOW.getTime() + 30 * 60_000);
+      await t.poller.handle(t.issue, t.config);
+      assert.match(t.prompts[1] ?? '', /\*\*Re-check 1 of 2\.\*\* An earlier diagnosis of this block escalated with the cause `environment`; since then develop moved from aaaaaaa to bbbbbbb/);
+    });
+
+    it('re-checks an escalation written before re-checks existed only on green base checks', async () => {
+      const t = scenario();
+      const legacy = { action: 'escalate', cause: 'environment', target: null, attempt: 0, blocked_at: '2026-11-12T11:00:00.000Z', prompt_hash: 'old', created_at: '2026-11-12T11:05:00.000Z' };
+      t.comments.push({ author: VIEWER, body: `old\n<!-- symphony:watchdog:v1 ${Buffer.from(JSON.stringify(legacy)).toString('base64url')} -->`, createdAt: new Date('2026-11-12T11:05:00Z'), url: 'https://example.test/old' });
+      assert.equal(await t.poller.handle(t.issue, t.config), null, 'red base');
+      t.head.rollup = 'passed';
+      t.later(30);
+      Object.assign(t.diagnosis, FIXED);
+      const event = await t.poller.handle(t.issue, t.config);
+      assert.equal(event?.recheck, 1);
+      assert.deepEqual(t.moves, ['In progress']);
+    });
   });
 });

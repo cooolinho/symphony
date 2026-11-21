@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// Merges a Symphony history (repository logs, session transcripts, issue archives) into another state directory
-// without dropping what is already there. scripts/push-history.sh ships this file into the server container and runs
-// it there, so it imports node: modules only (the image has no scripts/). See docs/docker.md.
+// Merges a Symphony state directory (repository logs, session transcripts, issue archives, change feed, budget and
+// brain journals, the instance log, runtime state) or the watchdog's state directory into another one without dropping
+// what is already there. scripts/push-history.sh and scripts/handover.sh ship this file into a container and run it
+// there, so it imports node: modules only (the image has no scripts/). See docs/docker.md.
 //
 //   node merge-history.ts --from <incoming-state> --into <state> [--dry-run]
 import fs from 'node:fs';
@@ -19,7 +20,20 @@ export interface MergeSummary {
   logs: Array<{ file: string; added: number }>;
   sessions: { copied: number; completed: number; present: number };
   issues: { written: number; kept: number; unreadable: string[] };
+  /** Other append-only files (`*.jsonl`, `*.log`, the instance log) with the number of lines the target lacked. */
+  journals: Array<{ file: string; added: number }>;
+  /** Runtime state taken over from the incoming side (it belongs to the instance that ran last). */
+  replaced: string[];
+  /** Any other file the target lacked, copied as is (existing files are never touched). */
+  copied: string[];
 }
+
+/** The orchestrator's own log and the file it rotates to; merged as one set of lines. */
+const INSTANCE_LOG = 'symphony.log';
+const INSTANCE_LOG_ROTATED = `${INSTANCE_LOG}.1`;
+
+/** Directories the history merge handles itself; the generic walk skips them. */
+const HISTORY_DIRS = new Set(['repositories', 'sessions', 'issues']);
 
 /** Non-empty lines of a file; empty when it does not exist. */
 function readLines(file: string): string[] {
@@ -165,6 +179,108 @@ export function mergeIssues(options: MergeOptions): MergeSummary['issues'] {
   return result;
 }
 
+/** Time of a line: `ts=…` of text logs, else the `at` field of a JSON line; empty when it has neither. */
+function timeOf(line: string): string {
+  const ts = tsOf(line);
+  if (ts !== '') return ts;
+  if (!line.startsWith('{')) return '';
+  try {
+    const parsed: unknown = JSON.parse(line);
+    const at = parsed !== null && typeof parsed === 'object' ? (parsed as { at?: unknown }).at : undefined;
+    return typeof at === 'string' ? at : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Union of two line lists, each line once, ordered by time (stable: lines of the same instant keep the target's
+ * order before the incoming ones). A line without a time takes the one of the line before it, so it stays in place.
+ */
+function unionByTime(target: string[], incoming: string[]): { merged: string[]; added: number } {
+  const seen = new Set(target);
+  const before = seen.size;
+  const merged = [...seen];
+  for (const line of incoming) {
+    if (seen.has(line)) continue;
+    seen.add(line);
+    merged.push(line);
+  }
+  const added = seen.size - before;
+  if (added === 0) return { merged, added };
+  const keyed = merged.map((line, index) => ({ line, index, time: timeOf(line) }));
+  let last = '';
+  for (const entry of keyed) {
+    if (entry.time === '') entry.time = last;
+    else last = entry.time;
+  }
+  keyed.sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : a.index - b.index));
+  return { merged: keyed.map((entry) => entry.line), added };
+}
+
+type FileRule = 'journal' | 'replace' | 'copy';
+
+/** How a file outside repositories/, sessions/ and issues/ (and other than the instance log) is merged. */
+function ruleOf(rel: string): FileRule {
+  if (rel.endsWith('.jsonl') || rel.endsWith('.log')) return 'journal';
+  // Runtime state (model holds) and the watchdog heartbeat describe the instance that ran last: the incoming one.
+  if ((rel.startsWith(`state${path.sep}`) && rel.endsWith('.json')) || rel === 'heartbeat.json') return 'replace';
+  return 'copy';
+}
+
+/**
+ * Files of the generic walk: everything below `from` except the history directories, the instance log pair and this
+ * script itself (scripts/push-history.sh unpacks it next to the incoming history).
+ */
+function otherFiles(from: string): string[] {
+  const self = import.meta.filename;
+  return listFiles(from).filter((rel) => {
+    const top = rel.split(path.sep)[0] ?? '';
+    return !HISTORY_DIRS.has(top) && rel !== INSTANCE_LOG && rel !== INSTANCE_LOG_ROTATED && path.join(from, rel) !== self;
+  });
+}
+
+/**
+ * The instance log rotates to `symphony.log.1` at 50 MB, so both machines' lines may sit in either file. Both files of
+ * both sides are merged as one set of lines into `symphony.log`; the target's `.1` is removed once its lines are in
+ * there. Symphony rotates the bigger file again on its next write.
+ */
+export function mergeInstanceLog(options: MergeOptions): MergeSummary['journals'] {
+  const incoming = [...readLines(path.join(options.from, INSTANCE_LOG_ROTATED)), ...readLines(path.join(options.from, INSTANCE_LOG))];
+  if (incoming.length === 0) return [];
+  const rotated = path.join(options.into, INSTANCE_LOG_ROTATED);
+  const target = [...readLines(rotated), ...readLines(path.join(options.into, INSTANCE_LOG))];
+  const { merged, added } = unionByTime(target, incoming);
+  if (added > 0 && !options.dryRun) {
+    writeAtomic(path.join(options.into, INSTANCE_LOG), `${merged.join('\n')}\n`);
+    fs.rmSync(rotated, { force: true });
+  }
+  return [{ file: INSTANCE_LOG, added }];
+}
+
+/** Every file outside the history directories: journals are merged line by line, state is replaced, the rest copied if missing. */
+export function mergeOther(options: MergeOptions): Pick<MergeSummary, 'journals' | 'replaced' | 'copied'> {
+  const result: Pick<MergeSummary, 'journals' | 'replaced' | 'copied'> = { journals: mergeInstanceLog(options), replaced: [], copied: [] };
+  for (const rel of otherFiles(options.from)) {
+    const source = path.join(options.from, rel);
+    const target = path.join(options.into, rel);
+    const rule = ruleOf(rel);
+    if (rule === 'journal') {
+      const { merged, added } = unionByTime(readLines(target), readLines(source));
+      result.journals.push({ file: rel, added });
+      if (added > 0 && !options.dryRun) writeAtomic(target, `${merged.join('\n')}\n`);
+      continue;
+    }
+    const exists = fs.existsSync(target);
+    if (rule === 'copy' && exists) continue;
+    const content = fs.readFileSync(source);
+    if (rule === 'replace' && exists && fs.readFileSync(target).equals(content)) continue;
+    (rule === 'replace' ? result.replaced : result.copied).push(rel);
+    if (!options.dryRun) writeAtomic(target, content);
+  }
+  return result;
+}
+
 /** What the merge must have achieved; one message per violation, empty when everything arrived. */
 export function verifyMerge(options: MergeOptions): string[] {
   const problems: string[] = [];
@@ -185,11 +301,30 @@ export function verifyMerge(options: MergeOptions): string[] {
     const target = readJson(path.join(options.into, 'issues', name));
     if (target === null || archivedAt(target) < archivedAt(incoming)) problems.push(`issues/${name}: missing or older`);
   }
+  const instance = [...readLines(path.join(options.from, INSTANCE_LOG_ROTATED)), ...readLines(path.join(options.from, INSTANCE_LOG))];
+  if (instance.length > 0) {
+    const target = new Set([...readLines(path.join(options.into, INSTANCE_LOG_ROTATED)), ...readLines(path.join(options.into, INSTANCE_LOG))]);
+    const missing = instance.filter((line) => !target.has(line)).length;
+    if (missing > 0) problems.push(`${INSTANCE_LOG}: ${missing} lines missing`);
+  }
+  for (const rel of otherFiles(options.from)) {
+    const target = path.join(options.into, rel);
+    const rule = ruleOf(rel);
+    if (rule === 'journal') {
+      const present = new Set(readLines(target));
+      const missing = readLines(path.join(options.from, rel)).filter((line) => !present.has(line)).length;
+      if (missing > 0) problems.push(`${rel}: ${missing} lines missing`);
+    } else if (!fs.existsSync(target)) {
+      problems.push(`${rel}: missing`);
+    } else if (rule === 'replace' && !fs.readFileSync(target).equals(fs.readFileSync(path.join(options.from, rel)))) {
+      problems.push(`${rel}: not taken over`);
+    }
+  }
   return problems;
 }
 
 export function mergeHistory(options: MergeOptions): MergeSummary {
-  return { logs: mergeLogs(options), sessions: mergeSessions(options), issues: mergeIssues(options) };
+  return { logs: mergeLogs(options), sessions: mergeSessions(options), issues: mergeIssues(options), ...mergeOther(options) };
 }
 
 export function formatSummary(summary: MergeSummary, dryRun: boolean): string {
@@ -202,6 +337,10 @@ export function formatSummary(summary: MergeSummary, dryRun: boolean): string {
   const i = summary.issues;
   lines.push(`Issue archives:  ${i.written} taken over, ${i.kept} newer or equal on the server`);
   if (i.unreadable.length > 0) lines.push(`                 skipped (unreadable): ${i.unreadable.join(', ')}`);
+  const journals = summary.journals.filter((journal) => journal.added > 0);
+  if (journals.length > 0) lines.push('Other logs:', ...journals.map((journal) => `  +${journal.added} lines  ${journal.file}`));
+  if (summary.replaced.length > 0) lines.push(`Runtime state:   taken over ${summary.replaced.join(', ')}`);
+  if (summary.copied.length > 0) lines.push(`Other files:     +${summary.copied.length} copied (${summary.copied.slice(0, 5).join(', ')}${summary.copied.length > 5 ? ', …' : ''})`);
   return `${dryRun ? 'Would merge (dry run, nothing written):\n' : ''}${lines.join('\n')}\n`;
 }
 
@@ -225,6 +364,6 @@ if (import.meta.main) {
       process.stderr.write(`merge-history: verification failed:\n${problems.map((problem) => `  ${problem}`).join('\n')}\n`);
       process.exit(1);
     }
-    process.stdout.write('Verified: every incoming line, transcript and archive is on the target.\n');
+    process.stdout.write('Verified: every incoming line, transcript, archive and file is on the target.\n');
   }
 }

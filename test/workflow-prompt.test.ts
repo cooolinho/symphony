@@ -924,7 +924,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
     });
     const gate = config.checks.onEnter.get('in review') ?? [];
     assert.deepEqual(gate.map((check) => [check.name, check.timeoutMs]), [['ci', 1_200_000], ['prod-smoke', 1_800_000]]);
-    assert.match(gate[0]?.command ?? '', /checks\/repo\.sh" ci -- bash "\$SYMPHONY_WORKFLOW_DIR\/checks\/laravel\.sh" --full$/);
+    assert.match(gate[0]?.command ?? '', /checks\/repo\.sh" --lock ci -- bash "\$SYMPHONY_WORKFLOW_DIR\/checks\/laravel\.sh" --full$/);
     assert.match(gate[1]?.command ?? '', /checks\/repo\.sh" --lock prod-smoke$/);
     assert.ok(maxColumnCheckMs(config.checks) < config.claude.turnTimeoutMs);
     assert.equal(config.checks.reportStatus, true);

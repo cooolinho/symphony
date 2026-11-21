@@ -970,13 +970,15 @@ room without changing the model. Every session uses the effort from `CLAUDE_EFFO
 
 ## Setting up repositories (`repo-init`)
 
-`repo-init` sets up the repositories from `GITHUB_REPOSITORY` interactively. There are two steps: the standard
-labels (model, effort and the labels of the [autopilot](#autopilot-auto-code)) and an issue that introduces Laravel
-Boost. Further steps are added as entries in the same selection list.
+`repo-init` sets up the repositories from `GITHUB_REPOSITORY` interactively. There are three steps: the standard
+labels (model, effort and the labels of the [autopilot](#autopilot-auto-code)), an issue that introduces Laravel
+Boost, and the board columns. Further steps are added as entries in the same selection list. The installer
+([`./install.sh`](install.md), menu item 7) runs it for you.
 
 ```bash
 npm run repo-init                            # or ./repo-init.ts
 npm run repo-init -- --env-file .env.website # different env file, as with npm start
+npm run repo-init -- --task board            # one step without the menu (labels, laravel-boost, board; repeatable)
 ```
 
 1. With several repositories, you choose which ones to set up. Enter means: all.
@@ -990,11 +992,15 @@ npm run repo-init -- --env-file .env.website # different env file, as with npm s
    `+ create issue "Set up Laravel Boost"`. After you confirm, it creates the issue: it describes
    `composer require laravel/boost --dev`, `boost:install`, the `.gitignore` entries and the `.ai/` folder. Drag the
    issue onto the board, and an agent introduces Boost via a pull request.
+5. **Board columns:** The script reads the `Status` field of the board in `GITHUB_PROJECT_NUMBER` (and
+   `GITHUB_PROJECT_OWNER`) and lists the columns `WORKFLOW.md` expects that are missing (`Design`, `Testing`, …). After
+   you confirm, it adds them, each after its predecessor; existing columns keep their id, color and order, so cards stay
+   where they are. This needs the `project` scope; without `GITHUB_PROJECT_NUMBER` the step is skipped.
 
 The script uses `GITHUB_REPOSITORY` and `GITHUB_TOKEN` from the `.env`. A classic token needs the `repo` scope, which
 the Symphony token already has. A fine-grained token needs *Issues: Read and write* and *Contents: Read* for the
 repositories. The standard labels are in `src/repo-init/labels.ts`, the Boost step in
-`src/repo-init/laravel-boost.ts`; new setup steps are added in `src/repo-init/tasks.ts`.
+`src/repo-init/laravel-boost.ts`, the board columns in `src/repo-init/board.ts`; new setup steps are added in `src/repo-init/tasks.ts`.
 
 ## Testing the orchestration (E2E)
 
@@ -1037,6 +1043,9 @@ retry timers, `--dry-run` and the dashboard all read it, so the order shown is t
 3. **New candidates** from the board.
 
 Inside each group the order is priority (Priority field 1–4, others last), then the oldest issue, then the identifier.
+With `agent.dispatch_order: column_first` the board column comes first: the rightmost column of
+`tracker.active_states` (e.g. `Security review`) before the ones left of it, then priority, age and identifier inside a
+column (see [`dispatch_order`](configuration.md#agent)).
 Free slots go down this list; an issue that waits for something else (a model hold, a column limit, open
 sub-issues, a slot reserved for another role) takes no slot, the next one gets it. A retry in its backoff holds no slot. This puts finishing work ahead
 of starting new work: while continuations run, new cards wait longer.

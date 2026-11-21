@@ -19,6 +19,15 @@ export const GITHUB_SECRET_ENV = ['GITHUB_TOKEN', 'GH_TOKEN', 'GITHUB_ENTERPRISE
 const PROJECT_URL = /^https?:\/\/[^/]+\/(?:users|orgs)\/([^/\s]+)\/projects\/(\d+)\/?(?:[?#].*)?$/;
 const REPOSITORY = /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/;
 
+/** A project number ("10") or project URL (which also names the owner); null for anything else. */
+export function parseProjectReference(text: string): { number: number; owner: string | null } | null {
+  const trimmed = text.trim();
+  const url = PROJECT_URL.exec(trimmed);
+  const number = url !== null ? Number(url[2]) : /^\d+$/.test(trimmed) ? Number(trimmed) : Number.NaN;
+  if (!Number.isSafeInteger(number) || number <= 0) return null;
+  return { number, owner: url?.[1] ?? null };
+}
+
 /** True for an `owner/name` repository reference. */
 export function isRepositoryName(name: string): boolean {
   return REPOSITORY.test(name);

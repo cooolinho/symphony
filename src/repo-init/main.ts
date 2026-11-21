@@ -1,22 +1,26 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
-import { TOKEN_FALLBACK_ENV, isRepositoryName, splitRepositoryList } from '../tracker/github-project/settings.ts';
+import { GithubGraphqlClient } from '../tracker/github-project/client.ts';
+import { DEFAULT_ENDPOINT, DEFAULT_STATUS_FIELD, TOKEN_FALLBACK_ENV, isRepositoryName, parseProjectReference, splitRepositoryList } from '../tracker/github-project/settings.ts';
 import { loadEnvFile, type LoadedEnvFile } from '../util/env.ts';
 import { errorMessage } from '../util/errors.ts';
 import { GithubRestClient } from './github-rest.ts';
-import { INIT_TASKS } from './tasks.ts';
+import type { BoardContext } from './board.ts';
+import { INIT_TASKS, type InitTask } from './tasks.ts';
 import { Terminal } from './terminal.ts';
 
 export const USAGE = `Usage: repo-init [options]
 
 Interactive setup for the repositories in GITHUB_REPOSITORY (owner/name, comma-separated;
 from the shell or the env file). Pick what to set up from a list: the standard "Model: …"
-labels that choose the Claude model per issue, or an issue that adds Laravel Boost to
-Laravel apps without it.
+labels that choose the Claude model per issue, an issue that adds Laravel Boost to
+Laravel apps without it, or the missing columns of the board in GITHUB_PROJECT_NUMBER.
 
 Options:
   --all               Run all setup tasks without the selection menu.
+  --task <id>         Run only this task without the menu (labels, laravel-boost, board);
+                      repeat it for several tasks.
   --yes, -y           Confirm all prompts with the default answer (use with --all for
                       fully non-interactive mode, e.g. in CI).
   --env-file <path>   Load variables from this dotenv file (default: .env next to
@@ -24,7 +28,9 @@ Options:
   -h, --help          Show this help.
 
 Needs GITHUB_TOKEN (or GH_TOKEN): a classic token with the "repo" scope, or a fine-grained
-token with "Issues: Read and write" and "Contents: Read" on the repositories.
+token with "Issues: Read and write" and "Contents: Read" on the repositories. The board
+task also needs the "project" scope (classic token) and GITHUB_PROJECT_NUMBER (number or
+URL); GITHUB_PROJECT_OWNER names the board owner if it is not the repository owner.
 `;
 
 export interface RepoInitOptions {
@@ -53,7 +59,7 @@ export async function runRepoInit(options: RepoInitOptions): Promise<number> {
     return code;
   };
 
-  let values: { 'env-file'?: string; help?: boolean; all?: boolean; yes?: boolean };
+  let values: { 'env-file'?: string; help?: boolean; all?: boolean; yes?: boolean; task?: string[] };
   try {
     ({ values } = parseArgs({
       args: options.argv,
@@ -62,6 +68,7 @@ export async function runRepoInit(options: RepoInitOptions): Promise<number> {
         help: { type: 'boolean', short: 'h' },
         all: { type: 'boolean' },
         yes: { type: 'boolean', short: 'y' },
+        task: { type: 'string', multiple: true },
       },
     }));
   } catch (error) {
@@ -71,6 +78,9 @@ export async function runRepoInit(options: RepoInitOptions): Promise<number> {
     options.output.write(USAGE);
     return 0;
   }
+  const taskIds = values.task ?? [];
+  const unknownTasks = taskIds.filter((id) => !INIT_TASKS.some((task) => task.id === id));
+  if (unknownTasks.length > 0) return fail(`unknown task ${unknownTasks.join(', ')} (valid: ${INIT_TASKS.map((task) => task.id).join(', ')})\n\n${USAGE}`, 2);
   const runAll = values.all === true;
   const autoYes = values.yes === true;
 
@@ -93,6 +103,21 @@ export async function runRepoInit(options: RepoInitOptions): Promise<number> {
   const repositories = [...new Map(names.map((name) => [name.toLowerCase(), name])).values()];
   const tokenName = TOKEN_FALLBACK_ENV.find((name) => (env[name] ?? '') !== '');
   if (tokenName === undefined) return fail(`no GitHub token: set ${TOKEN_FALLBACK_ENV.join(' or ')} (classic token with the "repo" scope)`);
+  const token = env[tokenName] as string;
+
+  let board: BoardContext | undefined;
+  const projectText = env.GITHUB_PROJECT_NUMBER ?? '';
+  if (projectText.trim() !== '') {
+    const project = parseProjectReference(projectText);
+    if (project === null) return fail(`GITHUB_PROJECT_NUMBER must be a project number or project URL (got ${JSON.stringify(projectText)})`);
+    const owner = (env.GITHUB_PROJECT_OWNER ?? '').trim() || project.owner || (repositories[0]?.split('/')[0] ?? '');
+    board = {
+      owner,
+      number: project.number,
+      statusField: DEFAULT_STATUS_FIELD,
+      graphql: new GithubGraphqlClient({ endpoint: DEFAULT_ENDPOINT, token, timeoutMs: 30_000, fetch: options.fetch }),
+    };
+  }
 
   const terminal = new Terminal(options.input, options.output, { yes: autoYes });
   try {
@@ -112,13 +137,14 @@ export async function runRepoInit(options: RepoInitOptions): Promise<number> {
       terminal.print(`Repository: ${repositories[0] ?? ''}`);
     }
 
-    const github = new GithubRestClient({ token: env[tokenName] as string, fetch: options.fetch });
+    const github = new GithubRestClient({ token, fetch: options.fetch });
     let ok = true;
-    if (runAll) {
-      for (const task of INIT_TASKS) {
+    if (runAll || taskIds.length > 0) {
+      const tasks: InitTask[] = runAll ? [...INIT_TASKS] : INIT_TASKS.filter((task) => taskIds.includes(task.id));
+      for (const task of tasks) {
         terminal.print();
         terminal.print(`── ${task.title} ──`);
-        if (!(await task.run({ repositories: selected, github, terminal }))) ok = false;
+        if (!(await task.run({ repositories: selected, github, terminal, board }))) ok = false;
       }
     } else {
       for (;;) {
@@ -127,7 +153,7 @@ export async function runRepoInit(options: RepoInitOptions): Promise<number> {
         const task = await terminal.choose('Choice', INIT_TASKS.map((entry) => ({ label: `${entry.title}: ${entry.summary}`, value: entry })));
         if (task === null) break;
         terminal.print();
-        if (!(await task.run({ repositories: selected, github, terminal }))) ok = false;
+        if (!(await task.run({ repositories: selected, github, terminal, board }))) ok = false;
       }
     }
     return ok ? 0 : 1;

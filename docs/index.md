@@ -4,6 +4,10 @@ Central overview of all Symphony documents. For an overview of the project, see 
 
 ## Getting started
 
+- [Installer](install.md): `./install.sh`, the interactive setup for Ubuntu and WSL2: requirements, token, Claude
+  credentials, SSH key, `.env`, repo-init and dry run, with a simulation mode
+- [Environment variables](environment.md): every variable of `.env`, `WORKFLOW.md` and the compose files with its default
+- [Overview](overview.md): the specification, how it works, all features, models per issue and the tech stack
 - [Getting Started](getting-started.md): requirements, installation, board, token, `.env`, dry run and start
 - [Docker](docker.md): running with Docker Compose behind Traefik: setup, updates, backup, common errors and security;
   local test setup without Traefik (`docker-compose.local.yml`)
@@ -12,6 +16,7 @@ Central overview of all Symphony documents. For an overview of the project, see 
 
 ## Reference
 
+- [development.md](development.md): tests, type check, demo dashboard, end-to-end tests and CI for working on Symphony
 - [configuration.md](configuration.md): every `WORKFLOW.md` option, `$VARIABLE` references, hooks and prompt variables
 - [adapters/github-project.md](adapters/github-project.md): the GitHub Projects adapter: settings, normalization, agent tools and errors
 - [agent-claude.md](agent-claude.md): Claude Code sessions, permissions, skills and plugins, Laravel Boost, timeouts and cost accounting

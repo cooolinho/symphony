@@ -137,6 +137,10 @@ agent:
     developer: 1
     reviewer: 1
   max_retry_backoff_ms: 600000
+  # Which issues get free slots first. priority: priority, then the oldest issue. column_first: the rightmost
+  # column of tracker.active_states first (Security review, Agent review, ... before Ready), then priority and age inside
+  # a column, so issues close to done finish before new ones start. Column limits and reservations stay as they are.
+  dispatch_order: ${SYMPHONY_DISPATCH_ORDER:-priority}
 
 claude:
   # Default model, e.g. fable, opus or sonnet; unset = Claude Code default. Roles with their own model use theirs (below:
@@ -418,16 +422,21 @@ checks:
   # true: named checks become commit statuses symphony/<name> on the checked commit (GitHub), which the auto_merge gate
   # and branch rules read. server.public_url links them to the agent page.
   report_status: ${SYMPHONY_CHECKS_REPORT_STATUS:-false}
+  # Before the In review checks Symphony merges origin/<base> into the issue branch and pushes it, so the CI tests what
+  # the merge will contain; a conflict goes back to the developer (on_check_failed) before the long CI run.
+  integrate_base: [In review]
   on_enter:
     Testing: bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh"       # only reached with the Testing stage on: the developer hands over green code
     Agent review: bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh"
     # The final gate before auto_merge: the repository's own CI, standing in for GitHub Actions.
     # ci: .symphony/checks/ci.sh of the base branch, else checks/laravel.sh --full (skipped without a Laravel app).
-    # prod-smoke: .symphony/checks/prod-smoke.sh of the base branch, one run per repository at a time; skipped without
-    # one. Both get the Docker daemon and MySQL of the compose profile "ci" (docs/docker.md) when it runs.
+    # prod-smoke: .symphony/checks/prod-smoke.sh of the base branch; skipped without one. Both get the Docker daemon and
+    # MySQL of the compose profile "ci" (docs/docker.md) when it runs. --lock: one run of each per repository at a time
+    # (parallel runs slow each other into the timeout); a run that finds the lock taken for SYMPHONY_CHECK_LOCK_WAIT_S
+    # (default 900 s, at most half its timeout_ms) is busy and runs again later, after a backoff.
     In review:
       - name: ci
-        command: bash "$SYMPHONY_WORKFLOW_DIR/checks/repo.sh" ci -- bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh" --full
+        command: bash "$SYMPHONY_WORKFLOW_DIR/checks/repo.sh" --lock ci -- bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh" --full
         timeout_ms: ${SYMPHONY_CI_TIMEOUT_MS:-1200000}
       - name: prod-smoke
         command: bash "$SYMPHONY_WORKFLOW_DIR/checks/repo.sh" --lock prod-smoke

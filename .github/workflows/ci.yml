@@ -30,6 +30,8 @@ jobs:
           cache: npm
       - run: npm ci --no-audit --no-fund
       - run: npm run check
+      - name: shellcheck install.sh
+        run: shellcheck -x install.sh
 
   docker:
     name: docker build

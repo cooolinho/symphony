@@ -145,6 +145,18 @@ describe('transition guard', () => {
     assert.match(slow?.message ?? '', /Call set_status again once/);
   });
 
+  it('returns check_timeout for a busy check (exit 75), telling the agent to end its turn instead of calling again', async () => {
+    const busy = denied(await setup({ checks: { 'Agent review': 'echo busy; exit 75' } }).guard('Agent review'));
+    assert.equal(busy?.category, 'check_timeout');
+    assert.match(busy?.message ?? '', /did not run: another run held its lock/);
+    assert.match(busy?.message ?? '', /do not move the issue to Blocked and do not call set_status again now/);
+  });
+
+  it('gives the check its own time limit as SYMPHONY_CHECK_TIMEOUT_MS', async () => {
+    const { guard } = setup({ checks: { 'Agent review': 'test "$SYMPHONY_CHECK_TIMEOUT_MS" = 4321' }, timeoutMs: 4321 });
+    assert.equal((await guard('Agent review')).allow, true);
+  });
+
   it('returns check_error for other exit codes, aborts and unexpected errors', async () => {
     const exit2 = denied(await setup({ checks: { 'Agent review': 'exit 2' } }).guard('Agent review'));
     assert.equal(exit2?.category, 'check_error');
@@ -558,6 +570,15 @@ describe('named entry checks', () => {
     const slow = named([{ name: 'prod-smoke', command: 'sleep 0.1; exit 78' }]);
     assert.ok((await slow.guard('Agent review')).allow);
     assert.deepEqual(slow.statuses, ['prod-smoke:pending:head', 'prod-smoke:success:head']);
+  });
+
+  it('reports a busy check (exit 75) as an error status that says it did not run, and does not cache it', async () => {
+    const reports: string[] = [];
+    const busy = named([{ name: 'ci', command: 'sleep 0.1; exit 75' }], { reportStatus: async (report) => void reports.push(`${report.state}: ${report.description}`) });
+    const decision = denied(await busy.guard('Agent review'));
+    assert.equal(decision?.category, 'check_timeout');
+    assert.match(reports.at(-1) ?? '', /^error: busy, not run \(waited \d+s\)$/);
+    assert.equal(busy.cache.size, 0);
   });
 
   it('caches each check: a re-entry runs only the one that did not pass, and reports the cached passes again', async () => {

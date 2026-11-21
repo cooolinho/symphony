@@ -1255,7 +1255,7 @@ describe('docs: work packages as sub-issues', () => {
     const { config } = await shipped();
     const limit = String(roleNamed(config, 'architect').maxSubIssues);
     assert.match(read('docs/usage.md'), new RegExp(`SYMPHONY_ARCHITECT_MAX_SUB_ISSUES\`, default ${limit}`));
-    assert.match(read('.env.example'), new RegExp(`^SYMPHONY_ARCHITECT_MAX_SUB_ISSUES=${limit}$`, 'm'));
+    assert.match(read('docs/environment.md'), new RegExp(`^\\| \`SYMPHONY_ARCHITECT_MAX_SUB_ISSUES\` \\| \`${limit}\` \\|`, 'm'));
   });
 
   it('mentions the feature in both READMEs under Features, with the same links', () => {
@@ -1277,7 +1277,7 @@ describe('docs: work packages as sub-issues', () => {
 
   it('leaves the prescribed section structure of README.md in place, in the prescribed order', () => {
     const headings = [...read('README.md').matchAll(/^## (.+?)\s*$/gm)].map((match) => match[1] ?? '');
-    const wanted = ['✨ Features', '🚀 Getting started', '📋 Usage', '📁 Project structure', '📚 Documentation', '🔗 References', '📄 License'];
+    const wanted = ['✨ Features', '🚀 Getting Started', '📋 Usage', '📁 Project Structure', '📚 Documentation', '🔗 References', '📄 License'];
     const found = headings.filter((heading) => wanted.includes(heading));
     assert.deepEqual(found, wanted);
     assert.equal([...read('README.de.md').matchAll(/^## (.+?)\s*$/gm)].length, headings.length, 'README.de.md mirrors the sections');

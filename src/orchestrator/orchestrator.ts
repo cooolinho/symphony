@@ -44,6 +44,7 @@ import { roleFor, roleName, type RoleConfig } from '../workflow/roles.ts';
 import { internalResult, panelVoteCounts, renderResultComment, severeCategoryCounts, verificationCounts, type ResultMeta } from '../workflow/results.ts';
 import type { EffectiveWorkflow, WorkflowLoadError } from '../workflow/store.ts';
 import { skipCheckProblems, skipReason, stageSkip, type StageSkip } from './skip.ts';
+import { checkTimeoutBackoffMs } from './check-backoff.ts';
 import { nextStageProblems, unknownBoardColumns, validateDispatch } from '../workflow/validate.ts';
 import {
   CONTINUATION_DELAY_MS,
@@ -421,6 +422,8 @@ interface IssueRecord {
   continuations: number;
   /** Consecutive session-limit failures; reset by every run that ends without one. */
   sessionLimitHits: number;
+  /** Consecutive runs that ended on a timed-out or busy hand-off check; reset by every run that ends otherwise. */
+  checkTimeoutHits: number;
   lastError: string | null;
   /** Execution timeline of the claim, the newest TIMELINE_EVENTS entries. */
   timeline: TimelineEvent[];
@@ -1585,7 +1588,8 @@ export class Orchestrator {
       kind: retry.kind,
       attempt: retry.attempt,
       dueAt: retry.dueAt,
-      due: retry.kind === 'continuation' || retry.queued || retry.dueAt.getTime() <= now,
+      // A continuation keeps its slot, unless it waits out a backoff (a timed-out hand-off check): then it frees the slot.
+      due: (retry.kind === 'continuation' && retry.dueAt.getTime() - now <= CONTINUATION_DELAY_MS) || retry.queued || retry.dueAt.getTime() <= now,
       limit: retry.limit,
     };
   }
@@ -2438,6 +2442,8 @@ export class Orchestrator {
     // Every run that ends without a session limit starts the count again.
     const sessionLimit = stop === null && outcome.kind === 'failed' ? (outcome.sessionLimit ?? null) : null;
     if (record && sessionLimit === null) record.sessionLimitHits = 0;
+    const checkTimedOut = stop === null && outcome.kind === 'normal' && outcome.checkTimedOut === true;
+    if (record) record.checkTimeoutHits = checkTimedOut ? record.checkTimeoutHits + 1 : 0;
 
     if (stop !== null) {
       if (stop.kind === 'stalled' && !this.#stopping) {
@@ -2476,6 +2482,10 @@ export class Orchestrator {
       if (missing?.onMissingResult != null) {
         // The claim stays until the check has decided: continue as before, or end the stage.
         void this.#serial.run(() => this.#endStageWithoutResult(entry, missing, retryInfo, outcome.backgroundTasks ?? []));
+      } else if (checkTimedOut) {
+        // The check would run again at once on the same busy host (#333: six timeouts in a row): wait first.
+        const delayMs = checkTimeoutBackoffMs(record?.checkTimeoutHits ?? 1);
+        this.#scheduleRetry(entry.issueId, 1, { ...retryInfo, kind: 'continuation', error: null }, delayMs);
       } else {
         this.#scheduleRetry(entry.issueId, 1, { ...retryInfo, kind: 'continuation', error: null });
       }
@@ -3450,6 +3460,7 @@ export class Orchestrator {
         runs: 0,
         continuations: 0,
         sessionLimitHits: 0,
+        checkTimeoutHits: 0,
         lastError: null,
         timeline: [],
         nextSeq: 1,

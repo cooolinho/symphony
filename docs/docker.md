@@ -1,5 +1,9 @@
 # Running Symphony with Docker
 
+> **Faster:** [`./install.sh`](install.md) with the mode *Docker lokal* or *Docker-Server* walks through steps 2 to 11
+> interactively (Docker installation, token, `secrets/ssh_key`, Traefik values, BasicAuth) and writes `.env`. Every
+> variable: [environment.md](environment.md).
+
 This guide sets up Symphony with `docker compose` on a server behind an existing
 [Traefik](https://doc.traefik.io/traefik/), describes day-to-day operation and helps with errors. The setup without
 Docker is described in [Getting Started](getting-started.md).
@@ -254,7 +258,8 @@ To leave out `-f` in every command, set the file for the shell session: `export 
 
 - **One board, one instance.** Two Symphony instances on the same board pick up the same issues and work against each
   other. While the local container runs, stop the instance on the server, or point `.env` at a test board and test
-  repository (`GITHUB_PROJECT_NUMBER`, `GITHUB_REPOSITORY`).
+  repository (`GITHUB_PROJECT_NUMBER`, `GITHUB_REPOSITORY`). `scripts/handover.sh` does the stopping and moves the
+  brain and the logs along ([Handing over to another machine](#handing-over-to-another-machine-handoversh)).
 - **Same project name as production.** Compose names the project after the directory (`symphony`), for both files. The
   volumes are therefore called `symphony_state`, `symphony_claude` and so on, the same as those of `docker-compose.yml`.
   On a machine that also runs `docker-compose.yml` from this directory, add `-p symphony-local` to every command; the
@@ -368,6 +373,8 @@ local session. `--dry-run` transfers the history into a throwaway container and 
 add; the server container keeps running. With `--replace`, `repositories/`, `sessions/` and `issues/` on the server are
 deleted first, so the server ends up with exactly the local history. Runtime state (`state/`), the change log
 (`changes/`), workspaces, Claude state and Composer cache are not transferred. A locally running Symphony must be stopped first.
+To move all logs between two Docker hosts, including the change log and the brain logs, use `scripts/handover.sh`
+([below](#handing-over-to-another-machine-handoversh)).
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -387,6 +394,104 @@ afterwards with `docker start <container>`):
 ```bash
 docker run --rm -i --volumes-from <container> --entrypoint bash "$(docker inspect -f '{{.Config.Image}}' <container>)" \
   -c 'cd /home/symphony/.local/state/symphony && rm -rf repositories sessions issues && tar xzf -' < ~/symphony-state-backup-<time>.tgz
+```
+
+### Handing over to another machine (handover.sh)
+
+When the server is busy, you can move Symphony to your own machine for a while and back again. Only one instance
+works the board at a time (see [Things to watch](#things-to-watch)). The script runs **locally** and connects via SSH:
+
+```bash
+scripts/handover.sh status            # who is active, versions, how the two vaults relate
+scripts/handover.sh pull --dry-run    # shows what would happen, changes nothing
+scripts/handover.sh pull              # server -> this machine
+scripts/handover.sh push              # this machine -> server
+```
+
+**pull** reads the version of the server's image and sets up the same tag as a git worktree next to the repository
+(`../symphony-v1.5.1`). It fetches the server's `.env` from its Compose directory into that worktree and sets these
+local values there:
+
+- `COMPOSE_PROJECT_NAME`
+- `COMPOSE_PROFILES` with `brain` added
+- `SYMPHONY_BRAIN_OBSIDIAN_URL=http://127.0.0.1:<BRAIN_PORT>`
+- `UID`/`GID`
+
+The previous `.env` is kept as `.env.bak`. It also fetches the server's `secrets/ssh_key` (and `.pub`), since only the
+key GitHub knows for the server's repositories can clone them; a different local key is kept as `ssh_key.bak`. Then it
+builds the image. Then it does the
+following:
+
+1. Stops the watchdog, Symphony and Obsidian on the server, which waits for running agents. It leaves
+   `~/.symphony-handover` on the server, so the server stays stopped even after a reboot.
+2. Backs up the local volumes to `~/symphony-handover-backups/<time>-<volume>.tgz`.
+3. **Replaces** the local `brain` (vault) and `obsidian-config` with the server's.
+4. **Merges** the server's `state` and `watchdog-state` (all logs) into the local ones.
+5. Checks the vault's git HEAD and runs `git fsck`.
+6. Starts `docker-compose.local.yml` with Obsidian. The dashboard is on `http://127.0.0.1:4000`, Obsidian on
+   `http://127.0.0.1:3000`.
+
+**push** stops the local stack and backs up the server volumes as `~/symphony-handover-backup-<time>.tgz` on the
+server. It then replaces the server's vault and Obsidian settings with the local ones, merges the local logs into the
+server's and checks the HEAD. Finally it starts the containers the pull stopped and removes the marker. The local
+volumes are kept.
+
+**Logs are never dropped.** Both directions merge with `scripts/merge-history.ts`, run in a one-off container from
+the target image. The script handles each kind of file as follows:
+
+| Files | Merge |
+|---|---|
+| `repositories/*.log`, `changes/*.jsonl`, `budget/rate-limits.jsonl`, `brain/access.jsonl`, watchdog `events.jsonl`, any other `*.log`/`*.jsonl` | union of the lines, each once, ordered by time (`ts=` or `at`) |
+| `symphony.log` and `symphony.log.1` | the four files of both sides as one set of lines, written to `symphony.log` |
+| `sessions/**` | missing transcripts copied, a longer one replaces a shorter one |
+| `issues/*.json` | the newer `archived_at` wins |
+| `state/*.json`, `heartbeat.json` | taken over from the side that ran last |
+| anything else (e.g. `brain/clashes/*.json`) | copied when missing, never overwritten or deleted |
+
+Running a handover again adds nothing twice. On the first pull, the history already in the local `symphony_state`
+volume is merged as well, and it reaches the server with the next push.
+
+**Safety:**
+
+- A pull refuses when the local vault has commits the server lacks, which means a push is missing. A push refuses
+  when the server's vault moved after the pull. In both cases `--force` replaces the vault anyway, and the backup
+  keeps the old one.
+- A push refuses while Symphony runs on the server.
+- If a step fails after the stop, the script starts the side it stopped again. A failed pull starts the server, a
+  failed push starts the local stack.
+- A pull recreates the local containers (`docker compose create --force-recreate`; the volumes stay). A stopped
+  container keeps the ID of the network it was created on, so after Compose recreated the `ci` network (new subnet,
+  `docker network prune`) it would otherwise fail to start with `network <id> not found`.
+
+Not transferred: the Claude home (`claude`) and the `workspaces`. Unpushed work of an agent that was stopped mid-issue
+stays in the workspaces volume of the machine it ran on; the other machine clones the repository anew.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SYMPHONY_REMOTE` | – | SSH target (required, e.g. `user@docker.lan`) |
+| `SYMPHONY_CONTAINER` | `symphony` | Name of the Symphony container on the server |
+| `SYMPHONY_HANDOVER_DIR` | `../symphony-<tag>` | Local checkout that runs Symphony (created as a git worktree) |
+| `SYMPHONY_HANDOVER_PROJECT` | `symphony` | Local Compose project, so the volumes are `<project>_brain` and so on |
+| `SYMPHONY_HANDOVER_BACKUPS` | `~/symphony-handover-backups` | Local backup directory |
+| `SYMPHONY_HANDOVER_CI_SUBNET` | server's `SYMPHONY_CI_SUBNET` | Subnet of the local `ci` network. Without it, `pull` keeps the server's value (or `172.31.250.0/24`) unless that overlaps a Docker network here (`Pool overlaps with other one`); then it picks the first free `10.250.N.0/24` |
+
+Like push-history, the script reads them from the shell or from the `.env` in the repository directory. The script
+finds the server's Obsidian and watchdog containers and their volumes through the Compose labels.
+
+Options: `--dry-run`, `--yes` (no confirmation), `--no-backup`, `--force` (see above), `--version vX.Y.Z` (run a
+different tag than the server's).
+
+Requirements:
+
+- An SSH key for the server: `ssh-copy-id user@docker.lan`.
+- Your user on the server can run `docker` without `sudo`.
+- `secrets/ssh_key` exists in the server's Compose directory.
+
+To restore a volume from a local backup, stop the local stack first:
+
+```bash
+docker run --rm -i --user 0 -v symphony_brain:/data --entrypoint sh symphony:local \
+  -c 'find /data -mindepth 1 -delete && tar xzf - -C /data' < ~/symphony-handover-backups/<time>-brain.tgz
 ```
 
 ### CI sidecars (profile `ci`)
@@ -445,6 +550,10 @@ then `docker compose up -d`. `symphony` waits until both sidecars are healthy (`
 - **Name `symphony-ci-mysql`:** The `symphony` container is also on the Traefik network. If another project there has
   a service called `mysql`, Docker's DNS may answer with that one, and the checks would create and drop databases on
   a foreign server. So the sidecar has a name of its own on the `ci` network; keep `SYMPHONY_MYSQL_HOST` on it.
+- **One run at a time:** the shipped `ci` and `prod-smoke` run through `checks/repo.sh --lock`, one run of each per
+  repository at a time; parallel test suites on one host slow each other into their timeout.
+  `SYMPHONY_CHECK_LOCK_SCOPE=host` serialises them across repositories too, `SYMPHONY_CHECK_LOCK_WAIT_S` bounds the
+  wait (see [repository checks](configuration.md#repository-checks-checksreposh)).
 - **Resources:** `dind` is limited to 4 GB, `mysql` to 3 GB including its tmpfs (`mem_limit`). Image builds need disk space in
   `dind-data`.
 

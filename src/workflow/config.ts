@@ -41,6 +41,11 @@ export interface ChecksConfig {
   onEnter: ReadonlyMap<string, readonly EntryCheck[]>;
   /** Report named checks to the tracker (GitHub commit statuses `symphony/<name>`). */
   reportStatus: boolean;
+  /**
+   * Normalized columns before whose checks Symphony merges `origin/<base>` into the issue branch and pushes the merge
+   * (`checks.integrate_base`); a conflict fails the entry check. Absent or empty = never.
+   */
+  integrateBase?: ReadonlySet<string>;
 }
 
 /** One entry check: a bash script; a named one (`ci`, `prod-smoke`) is reported as `symphony/<name>`. */
@@ -54,8 +59,17 @@ export interface EntryCheck {
 /** Names of entry checks: they become commit status contexts (`symphony/<name>`). */
 const CHECK_NAME = /^[a-z0-9][a-z0-9._-]{0,49}$/;
 
+/** Order of issues competing for free slots (`agent.dispatch_order`). */
+export type DispatchOrder = 'priority' | 'column_first';
+export const DISPATCH_ORDERS: readonly DispatchOrder[] = ['priority', 'column_first'];
+
 export interface AgentConfig {
   maxConcurrentAgents: number;
+  /**
+   * `priority`: priority, then age, then identifier. `column_first`: the rightmost column of `tracker.active_states`
+   * first, then the same order inside a column.
+   */
+  dispatchOrder: DispatchOrder;
   maxTurns: number;
   maxRetryBackoffMs: number;
   /**
@@ -255,6 +269,11 @@ export interface WatchdogConfig {
   cooldownMs: number;
   /** Automatic resumes per issue since the last human comment; then the limit label. */
   maxResumes: number;
+  /**
+   * Follow-up diagnoses of one block escalated with cause `environment` or `infra_transient`, each after the base branch
+   * moved (`watchdog.max_rechecks`, default 2; 0 = every block is diagnosed once).
+   */
+  maxRechecks: number;
   /** Absolute path of the prompt template (Liquid), read anew for every diagnosis. */
   prompt: string;
   /** Orchestrator API base URL for `/api/v1/state` and `/api/v1/budget`; null = not read. */
@@ -345,6 +364,7 @@ export const DEFAULTS = {
   watchdogSettleMs: 120_000,
   watchdogCooldownMs: 600_000,
   watchdogMaxResumes: 2,
+  watchdogMaxRechecks: 2,
   watchdogPrompt: 'roles/watchdog.md',
   watchdogModel: 'fable',
   watchdogMaxTurns: 2,
@@ -354,7 +374,7 @@ const PERMISSION_MODES: readonly PermissionMode[] = ['default', 'acceptEdits', '
 export const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 const SETTING_SOURCES: readonly SettingSource[] = ['user', 'project', 'local'];
 const CORE_TOP_LEVEL: readonly string[] = ['tracker', 'polling', 'workspace', 'hooks', 'checks', 'agent', 'claude', 'roles', 'pipeline', 'server', 'system', 'brain', 'budget', 'watchdog'];
-const WATCHDOG_KEYS = new Set(['mode', 'interval_ms', 'settle_ms', 'cooldown_ms', 'max_resumes', 'prompt', 'api_url', 'log_file', 'state_dir', 'claude']);
+const WATCHDOG_KEYS = new Set(['mode', 'interval_ms', 'settle_ms', 'cooldown_ms', 'max_resumes', 'max_rechecks', 'prompt', 'api_url', 'log_file', 'state_dir', 'claude']);
 const WATCHDOG_CLAUDE_KEYS = new Set(['model', 'effort', 'max_budget_usd', 'max_turns']);
 const BRAIN_KEYS = new Set(['enabled', 'path', 'clash_window_ms', 'obsidian_url', 'review_lessons']);
 const REVIEW_LESSONS_KEYS = new Set(['enabled', 'window_days', 'min_issues', 'inject_budget_chars']);
@@ -1100,12 +1120,17 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
       }
     }
   }
-  const checks: ChecksConfig = {
+  const checks: { -readonly [K in keyof ChecksConfig]: ChecksConfig[K] } = {
     timeoutMs: checksTimeoutMs,
     retries: reader.int(checksRaw, 'retries', 'checks.retries', 0, 0),
     onEnter,
     reportStatus: reader.bool(checksRaw, 'report_status', 'checks.report_status', false),
   };
+  const integrateBase = new Set((reader.stringList(checksRaw, 'integrate_base', 'checks.integrate_base') ?? []).map(normalizeStateName).filter((column) => column !== ''));
+  if (integrateBase.size > 0) checks.integrateBase = integrateBase;
+  for (const column of checks.integrateBase ?? []) {
+    if (!onEnter.has(column)) reader.errors.push(`checks.integrate_base: "${column}" has no checks in checks.on_enter, so nothing would run after the merge`);
+  }
   if (checks.retries > 3) reader.errors.push(`checks.retries must be between 0 and 3 (got ${checks.retries})`);
 
   // agent
@@ -1145,6 +1170,7 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
     maxConcurrentAgents: reader.int(agentRaw, 'max_concurrent_agents', 'agent.max_concurrent_agents', DEFAULTS.maxConcurrentAgents, 0),
     maxTurns: reader.int(agentRaw, 'max_turns', 'agent.max_turns', DEFAULTS.maxTurns, 1),
     maxRetryBackoffMs: reader.int(agentRaw, 'max_retry_backoff_ms', 'agent.max_retry_backoff_ms', DEFAULTS.maxRetryBackoffMs, 1),
+    dispatchOrder: reader.oneOf(agentRaw, 'dispatch_order', 'agent.dispatch_order', DISPATCH_ORDERS, 'priority'),
     maxConcurrentAgentsByState: byState,
     reservedSlotsByRole: reserved,
     maxContinuations:
@@ -1373,6 +1399,7 @@ function readWatchdog(reader: Reader, raw: Record<string, unknown>, workflowDir:
     settleMs: reader.int(section, 'settle_ms', 'watchdog.settle_ms', DEFAULTS.watchdogSettleMs, 0),
     cooldownMs: reader.int(section, 'cooldown_ms', 'watchdog.cooldown_ms', DEFAULTS.watchdogCooldownMs, 0),
     maxResumes: reader.int(section, 'max_resumes', 'watchdog.max_resumes', DEFAULTS.watchdogMaxResumes, 0),
+    maxRechecks: reader.int(section, 'max_rechecks', 'watchdog.max_rechecks', DEFAULTS.watchdogMaxRechecks, 0),
     prompt: optionalPath('prompt', DEFAULTS.watchdogPrompt) ?? path.join(workflowDir, DEFAULTS.watchdogPrompt),
     apiUrl: apiUrl === '' ? null : apiUrl.replace(/\/+$/, ''),
     logFile: optionalPath('log_file', null),

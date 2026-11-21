@@ -177,6 +177,7 @@ checks:
 | `retries` | `0` | Extra attempts after a failed check, `0`–`3`. |
 | `on_enter` | `{}` | Map of column name (matched trimmed and case-insensitively) to what must pass to enter it: a bash script, a [named check](#named-checks), or a list of either, run in order. |
 | `report_status` | `false` | Report named checks to the tracker; GitHub: commit statuses `symphony/<name>` (see [named checks](#named-checks)). |
+| `integrate_base` | `[]` | Columns before whose checks Symphony merges the base branch into the issue branch and pushes the merge (see [base integration](#base-integration)). Each must have checks in `on_enter`. |
 
 #### Named checks
 
@@ -189,7 +190,7 @@ checks:
   on_enter:
     In review:
       - name: ci
-        command: bash "$SYMPHONY_WORKFLOW_DIR/checks/repo.sh" ci -- bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh" --full
+        command: bash "$SYMPHONY_WORKFLOW_DIR/checks/repo.sh" --lock ci -- bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh" --full
         timeout_ms: 1200000
       - name: prod-smoke
         command: bash "$SYMPHONY_WORKFLOW_DIR/checks/repo.sh" --lock prod-smoke
@@ -200,11 +201,14 @@ checks:
 |---|---|
 | `name` | Lowercase letters, digits, `.`, `_`, `-` (at most 50), unique per column. The script sees it as `SYMPHONY_CHECK_NAME`. |
 | `command` | The bash script, run like a plain one. |
-| `timeout_ms` | Its own limit (default `checks.timeout_ms`); may come from a variable. The checks of one column run in one tool call, so their sum must stay below `claude.turn_timeout_ms`. |
+| `timeout_ms` | Its own limit (default `checks.timeout_ms`); may come from a variable. The script sees it as `SYMPHONY_CHECK_TIMEOUT_MS`. The checks of one column run in one tool call, so their sum must stay below `claude.turn_timeout_ms`. |
 
 - **Order and failures.** The checks run one after the other. A failing check (exit 1) does not stop the others: the
   agent gets every failure in one answer, each under a header `== <name>: failed (exit 1, 6m12s) ==`, sharing the
   6000 characters. A timeout or an environment problem stops at once.
+- **Exit 75** means the check did not run because a shared resource stayed busy (`checks/repo.sh --lock`, see
+  below): like a timeout, `check_timeout`, the issue stays in its column, and the agent ends its turn without calling
+  again; the status reads `busy, not run`.
 - **Exit 78** means the check does not apply here (no such script in the repository, no Laravel app): it passes as
   `skipped` and reports no status.
 - **Cache.** Each check is cached on its own (HEAD sha + name + command), so after a failure only the failed ones run
@@ -216,6 +220,26 @@ checks:
   `check_status_failed` and never changes the decision. GitHub needs the token scope `repo` (classic) or "Commit
   statuses: write". Branch rules can then require `symphony/ci`, and the auto-merge gate reads them like any check.
 
+#### Base integration
+
+With `integrate_base: [In review]`, Symphony brings the issue branch up to date before the column's checks run:
+`git fetch origin <base>` and, if the branch does not contain `origin/<base>` yet, `git merge --no-ff origin/<base>`,
+then a push of the merge commit. No agent is involved and nothing is resolved by hand. `<base>` is the pull request's
+base branch (`tracker.provider.base_branch`), else `origin/HEAD`.
+
+- **Why.** Between the developer's hand-off and the merge, other pull requests land (Testing, Agent review, Security
+  review and a long CI take hours). Without the step, the CI tests a stale branch and a conflict only shows at the
+  [auto-merge](adapters/github-project.md#merge-gate), after the whole gate has run.
+- **Conflict.** The merge is aborted (the workspace stays as it was) and the move is denied as a failed check named
+  `integrate-base`, with the conflicting files in the output. A result-driven role goes to its `on_check_failed`
+  column (the shipped workflow: In progress, back to the developer); the column's checks do not run.
+- **Git failure** (fetch or push fails, uncommitted changes, detached HEAD): the integration is skipped, logged as
+  `base_integration_skipped`, and the checks run as before. A clean merge is logged as `base_integrated`.
+- A workspace on the base branch itself (an integration review without a branch) is left alone.
+
+Tip: a `CHANGELOG.md merge=union` line in the repository's `.gitattributes` lets the merge keep both sides of
+changelog entries, the most common conflict of parallel issues.
+
 #### Repository checks (`checks/repo.sh`)
 
 `checks/repo.sh [--lock] <name> [-- fallback…]` runs a repository's own check, `.symphony/checks/<name>.sh`, **read
@@ -224,7 +248,12 @@ own merge, and a changed script applies once it is merged. Without that script i
 without one it exits 78. First it requires a clean tree with everything pushed, like `checks/laravel.sh`.
 
 - `--lock` runs one check of that name per repository at a time (`flock`), for checks with fixed compose project
-  names, ports or networks. Waiting counts against the check's timeout.
+  names, ports or networks, and for heavy ones that slow each other into their timeout when they run side by side
+  (the shipped `ci` and `prod-smoke`). `SYMPHONY_CHECK_LOCK_SCOPE=host` makes it one per host, across repositories.
+  The wait is bounded so the run keeps its time: at most `SYMPHONY_CHECK_LOCK_WAIT_S` seconds (default `900`) and
+  never more than half of the check's `timeout_ms`. A wait that ends without the lock exits **75** (busy): the check
+  did not run, the agent ends its turn, and Symphony continues the issue after a backoff (see below).
+  While the lock is held the run itself still counts against `timeout_ms`; size it for wait plus run.
 - With `SYMPHONY_CI_DOCKER_HOST` (the compose profile `ci`, see [docker.md](docker.md)) the script gets
   `DOCKER_HOST`, `DOCKER_TLS_VERIFY` and `DOCKER_CERT_PATH` for the CI Docker daemon, and `SYMPHONY_DOCKER_HOST_IP`,
   the address of ports that daemon publishes. Agents never get these variables.
@@ -253,7 +282,14 @@ touched. The guard decides on the run's role and the target column only, in this
 | `0` | The issue is moved; the tool result carries `note: "Checks passed — end your turn now."` (`report_result` keeps its own note, `"Result recorded — end your turn now."`) | End the turn, so the next role takes over. |
 | `1` | Tool error `check_failed`; the column is unchanged | The last 6000 characters of the output; fix the problems and call `set_status` (or `report_result`) again. |
 | none, `checks.timeout_ms` reached | Tool error `check_timeout`; the column is unchanged | A runtime limit, not the change: do not change code and do not move the issue to `Blocked`; call `set_status` once more, and if that times out too, comment and end the turn without a status change. Symphony picks the issue up again later. |
+| `75` (busy) | Tool error `check_timeout`; the column is unchanged | The check did not run (its lock stayed taken): do not change code, do not move to `Blocked`, do not call again now; comment and end the turn. |
 | other, aborted, or the check cannot start | Tool error `check_error`; the column is unchanged | Do not change code; describe the problem in an issue comment and move the issue to `Blocked` (`report_result`: end the turn instead). |
+
+**Backoff after a timed-out hand-off.** A result-driven run (`report_result`) whose hand-off check timed out or was
+busy ends without a reminder turn. Its continuation does not start after the usual 1 s, which would rerun the check
+at once on the same loaded host: consecutive such runs of a claim wait 5, 10, 20, then 30 minutes each, and the
+issue gives up its slot meanwhile (the dashboard queue shows `continues at …, after a timed-out entry check`). Any
+other end of a run starts the count again.
 
 **Cache.** A passing check is remembered per claim, in memory, under the key `HEAD sha` + hash of the script text. Before
 running a check the guard reads `git rev-parse HEAD` and `git status --porcelain` (5 s timeout each); when the tree
@@ -289,6 +325,7 @@ write a `transition_denied` line.
 | `model_hold_ms` | `3600000` | How long a model stays on hold after a model limit (e.g. `You've reached your Fable limit`) whose message names no reset. With a reset the hold lasts until the reset + 60 s. While a model is on hold, no issue that would run on it starts; its issues wait in the retry queue, the other models keep running, and no issue moves to another model. Holds are stored under `<logDir>/state/` and survive a restart. `GET /api/v1/state` reports them as `model_holds[]`. See [Model limits](usage.md#model-limits). |
 | `max_retry_backoff_ms` | `300000` | Cap for failure retries (10 s, 20 s, 40 s, …). |
 | `max_concurrent_agents_by_state` | `{}` | Per-status limits, e.g. `{ "In Progress": 1 }`. Invalid entries are ignored with a warning. |
+| `dispatch_order` | `priority` | Which issues get free slots first, inside each group of the [dispatch order](usage.md#dispatch-order) (continuations, due retries, new candidates). `priority`: priority (1–4, others last), then the oldest issue, then the identifier. `column_first`: the board column first, the rightmost column of `tracker.active_states` before the ones left of it (e.g. `Security review` and `Agent review` before `In progress` and `Ready`), then priority, age and identifier inside a column; states not in `active_states` come last. It is a sort order only: column limits and `reserved_slots_by_role` apply as before. Other values are a config error. |
 | `reserved_slots_by_role` | `{}` | Slots kept free for a [role](#roles), e.g. `{ developer: 1, reviewer: 1 }`, so a developer and a reviewer can always run side by side. An issue of role R starts only while the free slots exceed the unused reservations of the other roles (Σ max(0, reserved − running)); a reserved slot stays empty while its role has nothing to do. Command roles (`planner`, `auditor`, …) count as their own roles and never use the developer's reservation. Column limits still apply. Names that are not roles, and values that are not integers of `0` or more, are ignored with a warning. If the reservations add up to more than `max_concurrent_agents`, they are ignored and the dashboard shows a problem. See [Reserved slots](#reserved-slots). |
 | `continuation_prompt` | built-in | Liquid template sent on turn 2+ of a session (variables: `issue`, `attempt`, `role`, `agents`, `brain`, `brain_index`, `results`, `round`, `result_required`, `test_paths`, `project_types`, `attachments`, `human_feedback`, `turn_number`, `max_turns`). |
 
@@ -1269,6 +1306,7 @@ Settings of the [Blocked watchdog](watchdog.md), a separate process (`src/watchd
 | `settle_ms` | integer ≥ 0 | `120000` | Wait after the issue entered the blocked column |
 | `cooldown_ms` | integer ≥ 0 | `600000` | Least time between two resumes of one issue, and before a `wait` or a failed session is retried |
 | `max_resumes` | integer ≥ 0 | `2` | Automatic resumes since the newest human comment; then the issue stays blocked with `needs-human` |
+| `max_rechecks` | integer ≥ 0 | `2` | Follow-up diagnoses of one block escalated with cause `environment` or `infra_transient`, each only after the base branch moved and its checks are not red (docs/watchdog.md, "Re-check"); `0` = one diagnosis per block |
 | `prompt` | path | `roles/watchdog.md` | Liquid prompt of the diagnosis session, relative to `WORKFLOW.md`; read anew for every diagnosis |
 | `api_url` | http(s) URL | none | The orchestrator, for `/api/v1/state` (health, model holds) |
 | `log_file` | path | none | The orchestrator's log file (`--log-file`, `SYMPHONY_LOG_FILE`), quoted in the evidence |

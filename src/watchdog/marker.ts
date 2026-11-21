@@ -17,6 +17,15 @@ export interface WatchdogMarker {
   /** sha256 (first 12 hex digits) of the prompt file the diagnosis ran with. */
   prompt_hash: string;
   created_at: string;
+  /**
+   * The rule decision behind the comment: `resume` or `escalate` (in mode `comment` the action alone does not tell);
+   * null in markers written before re-checks existed, then derived from `action`.
+   */
+  decision: 'resume' | 'escalate' | null;
+  /** Number of the diagnosis within this block: 0 for the first, 1.. for re-checks after the base branch moved. */
+  recheck: number;
+  /** Head of the repository's base branch when the diagnosis ran; null when unknown. */
+  base_sha: string | null;
 }
 
 const PATTERN = /<!-- symphony:watchdog:v1 ([A-Za-z0-9_-]+) -->/;
@@ -40,6 +49,9 @@ export function decodeWatchdogMarker(text: string): WatchdogMarker | null {
       blocked_at: typeof value.blocked_at === 'string' ? value.blocked_at : null,
       prompt_hash: typeof value.prompt_hash === 'string' ? value.prompt_hash : '',
       created_at: value.created_at,
+      decision: value.decision === 'resume' || value.decision === 'escalate' ? value.decision : value.action === 'comment' ? null : value.action,
+      recheck: typeof value.recheck === 'number' && Number.isInteger(value.recheck) && value.recheck >= 0 ? value.recheck : 0,
+      base_sha: typeof value.base_sha === 'string' && value.base_sha !== '' ? value.base_sha : null,
     };
   } catch {
     return null;
@@ -65,4 +77,10 @@ export function watchdogEntries(comments: readonly IssueComment[], viewer: strin
     if (marker !== null) entries.push({ marker, comment });
   }
   return entries;
+}
+
+/** The watchdog comments of one block (`blocked_at`), oldest first; [] for a block without a known start. */
+export function blockEntries(entries: readonly WatchdogEntry[], blockedAt: string | null): WatchdogEntry[] {
+  if (blockedAt === null) return [];
+  return entries.filter((entry) => entry.marker.blocked_at === blockedAt);
 }
