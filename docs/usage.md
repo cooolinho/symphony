@@ -1043,6 +1043,9 @@ retry timers, `--dry-run` and the dashboard all read it, so the order shown is t
 3. **New candidates** from the board.
 
 Inside each group the order is priority (Priority field 1–4, others last), then the oldest issue, then the identifier.
+With `agent.dispatch_order: column_first` the board column comes first: the rightmost column of
+`tracker.active_states` (e.g. `Security review`) before the ones left of it, then priority, age and identifier inside a
+column (see [`dispatch_order`](configuration.md#agent)).
 Free slots go down this list; an issue that waits for something else (a model hold, a column limit, open
 sub-issues, a slot reserved for another role) takes no slot, the next one gets it. A retry in its backoff holds no slot. This puts finishing work ahead
 of starting new work: while continuations run, new cards wait longer.

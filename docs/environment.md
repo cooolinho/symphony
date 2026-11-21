@@ -59,6 +59,7 @@ Referenced in `WORKFLOW.md` as `${VAR:-default}`.
 | Variable | Default | Meaning |
 |---|---|---|
 | `SYMPHONY_MAX_CONCURRENT_AGENTS` | `3` | Agent slots (`0` pauses all new starts). The dashboard can override them at runtime (stored in the runtime state, survives a restart): dashboard override > `WORKFLOW.md` > this value; "Reset to WORKFLOW.md" returns to it. About 1 CPU and 2 GB RAM per agent. The test stage needs at least 3 slots (4 to run it next to the issue analyst). |
+| `SYMPHONY_DISPATCH_ORDER` | `priority` | `agent.dispatch_order`: `priority` (priority, then age) or `column_first` (rightmost board column first, so review stages get free slots before new issues). See [configuration](configuration.md#agent). |
 | `SYMPHONY_MAX_TURNS` | `10` | Turns per session before Symphony re-evaluates the state. |
 | `SYMPHONY_MAX_CONTINUATIONS` | `6` | Continuation sessions while the card stays active; after that Symphony pauses the issue (empty = unlimited). Role switches (developer ↔ reviewer) count as continuations, so keep a limit. See [continuations](usage.md#continuations-and-pausing). |
 | `SYMPHONY_MAX_SESSION_LIMIT_RETRIES` | `3` | Retries per issue after the first session-limit failure; after that the worker waits for the reset (retry at reset + 1 minute, in memory only; `0` = wait right away). An unknown reset keeps the normal backoff. See [session limit](usage.md#session-limit). |
