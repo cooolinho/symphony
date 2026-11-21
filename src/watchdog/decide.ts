@@ -21,6 +21,11 @@ export const diagnosisShape = {
   cause: z.enum(DIAGNOSIS_CAUSES).describe('Why the issue is blocked (see the prompt for each value)'),
   evidence: z.array(z.string().trim().min(1).max(2000)).min(1).max(30).describe('Facts that prove the cause: log lines, file:line, transcript excerpts, URLs'),
   cause_gone: z.boolean().describe('True when the cause no longer holds right now (the outage is over, the answer is in the comment)'),
+  fixable_in_target: z
+    .boolean()
+    .describe(
+      'True when the stage in target_column can remove the cause itself by following the comment (fix a workspace file, take over the pushed head and hand off again, address named findings): no human and no change to the base branch needed',
+    ),
   comment: z.string().trim().min(1).max(20_000).describe('The finished Markdown comment for the issue, addressed to the next agent'),
   target_column: z.string().trim().min(1).nullable().describe('Column the issue should go back to; null when it must stay blocked'),
   confidence: z.enum(['low', 'medium', 'high']).describe('How sure the diagnosis is'),
@@ -58,7 +63,10 @@ export interface DecideInput {
   now: Date;
 }
 
-/** Causes the watchdog resumes on its own once `cause_gone` holds; the rest go to a human. */
+/**
+ * Causes the watchdog resumes on its own once `cause_gone` holds, or while it holds when the target column can fix it
+ * (`fixable_in_target`, high confidence). `round_limit` resumes once per issue under the same condition; the rest go to a human.
+ */
 const RESUMABLE: ReadonlySet<DiagnosisCause> = new Set(['infra_transient', 'environment', 'missing_result', 'question_answered']);
 
 const same = (a: string, b: string) => normalizeStateName(a) === normalizeStateName(b);
@@ -72,9 +80,20 @@ export function resumesSinceHuman(entries: readonly WatchdogEntry[], humanCommen
 /** The fixed guard rails around the session's recommendation (docs/watchdog.md, "Entscheidung"). */
 export function decide(input: DecideInput): Decision {
   const { diagnosis } = input;
-  if (!RESUMABLE.has(diagnosis.cause)) return { action: 'escalate', reason: `cause ${diagnosis.cause} needs a human` };
-  if (diagnosis.cause === 'infra_transient' && !diagnosis.cause_gone) return { action: 'wait', reason: 'the infrastructure problem still holds' };
-  if (!diagnosis.cause_gone) return { action: 'escalate', reason: `cause ${diagnosis.cause} still holds` };
+  // Fixable in the target column: the cause may still hold (a wrong workspace file, a hand-off baseline the next stage
+  // moves), but the stage there removes it by following the comment. Only with high confidence.
+  const fixable = diagnosis.fixable_in_target === true && diagnosis.confidence === 'high' && diagnosis.target_column !== null;
+  if (diagnosis.cause === 'round_limit') {
+    if (!fixable) return { action: 'escalate', reason: 'cause round_limit needs a human' };
+    if (input.entries.some((entry) => entry.marker.action === 'resume' && entry.marker.cause === 'round_limit')) {
+      return { action: 'escalate', reason: 'a round limit was already resumed once on this issue' };
+    }
+  } else if (!RESUMABLE.has(diagnosis.cause)) {
+    return { action: 'escalate', reason: `cause ${diagnosis.cause} needs a human` };
+  } else if (!diagnosis.cause_gone && !fixable) {
+    if (diagnosis.cause === 'infra_transient') return { action: 'wait', reason: 'the infrastructure problem still holds' };
+    return { action: 'escalate', reason: `cause ${diagnosis.cause} still holds` };
+  }
   if (diagnosis.cause === 'question_answered' && diagnosis.confidence !== 'high') {
     return { action: 'escalate', reason: `answer given with ${diagnosis.confidence} confidence only` };
   }
@@ -102,7 +121,8 @@ export function decide(input: DecideInput): Decision {
   if (!input.manualMerge && diagnosis.confidence !== 'high' && input.reviewColumns.some((column) => same(column, target))) {
     return { action: 'escalate', reason: `"${target}" leads to auto-merge without manual-merge; needs high confidence` };
   }
-  return { action: 'resume', target, attempt: resumes.length + 1, reason: `cause ${diagnosis.cause} is gone` };
+  const reason = diagnosis.cause_gone ? `cause ${diagnosis.cause} is gone` : `cause ${diagnosis.cause} can be fixed in "${target}"`;
+  return { action: 'resume', target, attempt: resumes.length + 1, reason };
 }
 
 /** Causes whose escalation is not final: the fix lands on the base branch (a repaired test env, an outage over), not on the issue. */

@@ -111,8 +111,15 @@ The session recommends; `src/watchdog/decide.ts` decides:
 | `infra_transient`, cause holds | wait, look again after `cooldown_ms` (not counted as a resume) |
 | `environment` or `infra_transient` escalated | re-checked when the base branch moves (see "Re-check") |
 | `environment`, `missing_result`, cause gone | resume |
+| `environment`, `missing_result`, `question_answered`, `infra_transient`, cause holds, `fixable_in_target`, confidence `high` | resume; the comment tells the stage how to remove the cause |
 | `question_answered`, confidence `high` | resume; the answer is in the comment |
-| `needs_access`, `needs_human`, `round_limit`, `unknown`, low confidence, or the cause still holds | escalate: comment, `needs-human`, stays blocked |
+| `round_limit`, `fixable_in_target`, confidence `high`, no earlier `round_limit` resume on the issue | resume once; the comment names the fix for the open findings |
+| `needs_access`, `needs_human`, `unknown`, low confidence, a second `round_limit`, or the cause still holds and is not fixable in the target | escalate: comment, `needs-human`, stays blocked |
+
+`fixable_in_target` is the session's statement that the stage in `target_column` removes the cause itself by following
+the comment, without a human and without a change to the base branch: a wrong value in the workspace's gitignored
+`.env`, or a path-rule refusal because the base branch was merged into the issue branch after the developer's hand-off.
+A check that is red on the base branch itself is not fixable in the target; it waits for the re-check below.
 
 The target is the session's `target_column`, else the column the issue came from. It escalates instead when the target:
 

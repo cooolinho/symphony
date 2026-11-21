@@ -66,6 +66,8 @@ export interface WatchdogEvent {
   cause: string | null;
   confidence: string | null;
   recommended: string | null;
+  /** The diagnosis says the target column can fix the cause (`fixable_in_target`); null without a diagnosis. */
+  fixable: boolean | null;
   decision: Decision['action'] | 'error';
   reason: string;
   action: string | null;
@@ -419,7 +421,7 @@ export class WatchdogPoller {
     if (outcome.diagnosis === null) {
       // A failed session (usage limit, outage) is no verdict on the issue: try again after the cooldown.
       this.#later(key, now, watchdog.cooldownMs);
-      return this.#record({ ...common, cause: null, confidence: null, recommended: null, decision: 'error', reason: outcome.error ?? 'no diagnosis', action: null, moved: null, errors: [] });
+      return this.#record({ ...common, cause: null, confidence: null, recommended: null, fixable: null, decision: 'error', reason: outcome.error ?? 'no diagnosis', action: null, moved: null, errors: [] });
     }
 
     const diagnosis: Diagnosis = outcome.diagnosis;
@@ -466,6 +468,7 @@ export class WatchdogPoller {
       cause: diagnosis.cause,
       confidence: diagnosis.confidence,
       recommended: diagnosis.target_column,
+      fixable: diagnosis.fixable_in_target,
       decision: decision.action,
       reason: decision.reason,
       action: done.action,

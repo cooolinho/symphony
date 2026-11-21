@@ -930,17 +930,26 @@ describe('report_result', () => {
 
     /** A rule whose changed files can be edited between calls; `calls` counts the lookups. */
     function rule(initial: string[]) {
-      const state = { files: initial, base: '0123456789abcdef0123', calls: 0, failure: null as Error | null };
+      const state = { files: initial, base: '0123456789abcdef0123', calls: 0, failure: null as Error | null, excludedBase: null as string | null };
       const pathRule = {
         allowed: ALLOWED,
         changedFiles: async () => {
           state.calls++;
           if (state.failure !== null) throw state.failure;
-          return { base: state.base, files: state.files };
+          return { base: state.base, files: state.files, excludedBase: state.excludedBase };
         },
       };
       return { state, pathRule };
     }
+
+    it('says when changes from a merge of the base branch were left out', async () => {
+      const { state, pathRule } = rule(['src/Total.php']);
+      state.excludedBase = 'origin/develop';
+      const { report } = setup({ role: 'tester', state: 'Testing', pathRule });
+      const refused = error(await report(PASSED));
+      assert.equal(refused.category, 'invalid_result');
+      assert.match(refused.message, /- src\/Total\.php\nChanges that came from origin\/develop are not counted\.\n/);
+    });
 
     it('refuses a result with changes to src/ with invalid_result, naming the files, before any entry check', async () => {
       const { state, pathRule } = rule(['src/Total.php', 'tests/TotalTest.php', 'app/Models/Invoice.php']);
@@ -953,6 +962,7 @@ describe('report_result', () => {
       assert.doesNotMatch(refused.message, /tests\/TotalTest\.php\n/, 'files inside the paths are not listed');
       assert.match(refused.message, /Nothing was recorded\. Undo the changes you made yourself[\s\S]*git checkout 0123456789ab -- <file>/);
       assert.match(refused.message, /Leave a file alone that you did not change[\s\S]*report the verdict `blocked`/);
+      assert.doesNotMatch(refused.message, /are not counted/);
       assert.deepEqual(events, [], 'the entry check of Agent review did not run');
       assert.deepEqual(tracker.statusCalls, []);
       assert.equal(tracker.comments.get('1'), undefined);
