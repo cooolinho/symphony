@@ -7,7 +7,7 @@
  * every 2 s) and a made-up GitHub API budget. Changes, Brain and Statistik show the made-up history of scripts/demo-seed.ts
  * (runs of two weeks, commits and merges, a knowledge vault). docs/preview.gif is recorded from this demo.
  *
- *   node scripts/demo.ts [port]
+ *   node scripts/demo.ts [port]      (SYMPHONY_DEMO_BUDGET=over: the current 5 h window is over the limit)
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -21,7 +21,7 @@ import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
 import { startHttpServer } from '../src/http/server.ts';
 import { SystemCollector } from '../src/system/metrics.ts';
 import { FakeRunner, FakeTracker, StaticWorkflow, baseFront, makeIssue, makeWorkflow, tempDir } from '../test/helpers.ts';
-import { seedBrain, seedChanges, seedHistory } from './demo-seed.ts';
+import { seedBrain, seedChanges, seedHistory, seedRateLimits } from './demo-seed.ts';
 
 const port = Number(process.argv[2] ?? 4000);
 const root = tempDir('symphony-demo-');
@@ -128,6 +128,8 @@ const pricing = new PricingStore(path.join(import.meta.dirname, '..', 'model-cos
 const history = new HistoryLog(path.join(logDir, 'repositories'), pricing, logger);
 seedHistory(history, now);
 seedChanges(logDir, now);
+// 5 h chart of the budget panel: SYMPHONY_DEMO_BUDGET=over shows the current window over the limit.
+seedRateLimits(logDir, now, process.env.SYMPHONY_DEMO_BUDGET === 'over' ? 'over' : 'forecast');
 // The vault's init commit dates from the morning, before the seeded agent commits.
 process.env.GIT_AUTHOR_DATE = process.env.GIT_COMMITTER_DATE = new Date(now - 12 * 3_600_000).toISOString();
 await prepareBrain(workflow.current.config.brain, ['acme/app'], logger);

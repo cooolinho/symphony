@@ -1,4 +1,5 @@
 import { ALERTS_CSS, ALERTS_JS } from './alerts.ts';
+import { BUDGET_CHART_CSS, BUDGET_CHART_JS } from './budget-chart.ts';
 import { PIPELINE_CSS, PIPELINE_JS } from './pipeline.ts';
 import { ACTIVITY_CSS, ACTIVITY_JS } from './overview-activity.ts';
 import { BRAIN_CSS, BRAIN_JS, BRAIN_PANELS_HTML } from './overview-brain.ts';
@@ -202,7 +203,7 @@ export const DASHBOARD_HTML = page({
   nav: 'overview',
   aurora: AURORA.overview,
   pollNow: true,
-  styles: PIPELINE_CSS + TEAMS_CSS + ALERTS_CSS + HEAD_CSS + ACTIVITY_CSS + BRAIN_CSS + DASHBOARD_CSS,
+  styles: PIPELINE_CSS + TEAMS_CSS + ALERTS_CSS + HEAD_CSS + ACTIVITY_CSS + BRAIN_CSS + BUDGET_CHART_CSS + DASHBOARD_CSS,
   body: `
   <div class="page-title ov-head">
     <div class="ov-title">
@@ -306,7 +307,7 @@ ${BRAIN_PANELS_HTML}
   scripts: `
 (() => {
 ${PIPELINE_JS}${TEAMS_JS}
-${ALERTS_JS}${HEAD_JS}${ACTIVITY_JS}${BRAIN_JS}
+${ALERTS_JS}${HEAD_JS}${ACTIVITY_JS}${BRAIN_JS}${BUDGET_CHART_JS}
 
   const $ = (id) => document.getElementById(id);
   const setText = (node, text) => { text = String(text ?? ''); if (node.textContent !== text) node.textContent = text; };
@@ -1087,6 +1088,27 @@ ${ALERTS_JS}${HEAD_JS}${ACTIVITY_JS}${BRAIN_JS}
   let budgetData = null;
   let budgetAnswer = null;
   const BUDGET_NO_DATA = 'Noch kein Verbrauch heute';
+  // The 5 h utilisation chart below the 5 h bar: one persistent node (patchChildren keeps it, so its listeners stay),
+  // loaded together with /api/v1/budget (onBudget) and on a change of the range, never more often.
+  let fiveHourRange = 'window';
+  let fiveHourSeq = 0;
+  // created on first use, so script slices without the chart bundle (tests of other panels) still evaluate
+  let fiveHourInst = null;
+  const fiveHour = () => (fiveHourInst ??= fiveHourChart({ onRange: (range) => { if (range === fiveHourRange) return; fiveHourRange = range; loadFiveHour(); } }));
+  async function loadFiveHour() {
+    const seq = ++fiveHourSeq;
+    const range = fiveHourRange;
+    let body = null;
+    try {
+      const res = await fetch('/api/v1/budget/five-hour?range=' + range, { cache: 'no-store' });
+      body = res.ok ? await res.json() : null;
+    } catch {
+      body = null;
+    }
+    if (seq !== fiveHourSeq) return;
+    // Answers of another shape (e.g. a stub that answers every /api/v1/budget… URL with the budget report) count as no data.
+    fiveHour().setData(body && body.range === range && Array.isArray(body.windows) ? body : null, budgetData);
+  }
   // Open brain clashes and the candidate count for the alerts; null without a brain (404 brain_disabled) or on any error.
   let brainAnswer = null;
   async function loadBrainAlerts() {
@@ -1188,6 +1210,7 @@ ${ALERTS_JS}${HEAD_JS}${ACTIVITY_JS}${BRAIN_JS}
     const empty = !report || (idle(report.five_hour) && idle(report.seven_day));
     const nodes = [
       budgetWindow(report && report.five_hour, 'five_hour', '5-h-Fenster', empty),
+      fiveHour().host,
       budgetWindow(report && report.seven_day, 'seven_day', 'Woche', empty),
     ];
     const roles = empty ? null : budgetRoles(report.five_hour.by_role);
@@ -1197,6 +1220,7 @@ ${ALERTS_JS}${HEAD_JS}${ACTIVITY_JS}${BRAIN_JS}
   }
 
   function renderBudget() {
+    fiveHour().setGate(windowPause('five_hour'));
     patchChildren($('budget-body'), budgetSection(budgetData, lastState));
   }
 
@@ -1289,6 +1313,7 @@ ${ALERTS_JS}${HEAD_JS}${ACTIVITY_JS}${BRAIN_JS}
     budgetData = report;
     budgetAnswer = raw;
     renderBudget();
+    loadFiveHour();
     if (lastState) renderAlerts(alerts(lastState, budgetAnswer, brainAnswer), $('alerts-list'), $('alerts-count'));
   });
   load();

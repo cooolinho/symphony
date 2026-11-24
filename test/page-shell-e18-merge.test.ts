@@ -29,7 +29,7 @@ describe('E1-8 nach dem Merge', () => {
     assert.equal(LAYOUT_JS.match(/fetch\('\/api\/v1\/budget'/g)?.length, 1);
     for (const [name, html] of Object.entries(PAGES)) {
       const own = html.replace(LAYOUT_JS, '');
-      assert.doesNotMatch(own, /fetch\(['"`]\/api\/v1\/budget/, `${name} lädt das Budget selbst`);
+      assert.doesNotMatch(own, /fetch\(['"`]\/api\/v1\/budget['"`?]/, `${name} lädt das Budget selbst`);
     }
   });
 
