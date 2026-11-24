@@ -232,3 +232,52 @@ export function seedBrain(vault: string, logDir: string, now: number): void {
   fs.mkdirSync(path.join(logDir, 'brain'), { recursive: true });
   fs.writeFileSync(path.join(logDir, 'brain', 'access.jsonl'), `${access.map((entry) => JSON.stringify(entry)).join('\n')}\n`);
 }
+
+/**
+ * Rate-limit events of the last 7 days for the 5 h chart of the budget panel (#605): one event every 6 minutes while a
+ * window is used, idle gaps between the windows, every third window over the limit (a `rejected` event at 100 %).
+ * `forecast`: the current window is at about 66 % and reaches the limit before its reset; `over`: it went over the limit.
+ */
+export function seedRateLimits(logDir: string, now: number, scenario: 'forecast' | 'over'): void {
+  const rnd = random(23);
+  const MIN = 60_000;
+  const lines: string[] = [];
+  const event = (at: number, utilization: number, reset: number, status = 'allowed') => {
+    const resetsAt = Math.floor(reset / 1000);
+    lines.push(JSON.stringify({
+      at: new Date(at).toISOString(), run_id: `rl-${at}`, issue: `${REPO}#${30 + (at % 7)}`, role: 'developer', model: MODELS.opus,
+      rate_limit_info: { rateLimitType: 'five_hour', status, resetsAt, unifiedWindows: { five_hour: { utilization: Math.round(utilization * 1000) / 1000, resetsAt } } },
+    }));
+  };
+  /** One window from `start`: rises to `peak` (a share) over `reach` of the window, stops at `end`. */
+  const window = (start: number, peak: number, reach: number, end: number) => {
+    const reset = start + 5 * HOUR;
+    let rejected = false;
+    for (let at = start + 3 * MIN; at <= Math.min(end, reset - MIN); at += 6 * MIN) {
+      const frac = Math.min(1, (at - start) / (5 * HOUR * reach));
+      const u = peak * frac * (0.96 + rnd() * 0.04);
+      if (frac >= 1 && rejected) break;
+      if (u >= 1 && !rejected && peak > 1) {
+        event(at, 1, reset, 'rejected');
+        rejected = true;
+        continue;
+      }
+      event(at, u, reset);
+    }
+  };
+
+  const currentStart = scenario === 'over' ? now - 3.5 * HOUR : now - 3 * HOUR;
+  const past: number[] = [];
+  for (let end = currentStart - (0.5 + rnd() * 2) * HOUR; end - 5 * HOUR > now - 7 * 24 * HOUR; end -= 5 * HOUR + (0.5 + rnd() * 3) * HOUR) past.unshift(end - 5 * HOUR);
+  past.forEach((start, i) => {
+    const over = i % 3 === 1;
+    window(start, over ? 1.04 + rnd() * 0.14 : 0.35 + rnd() * 0.6, over ? 0.7 : 0.6 + rnd() * 0.35, start + 5 * HOUR);
+  });
+  if (scenario === 'over') window(currentStart, 1.12, 0.62, now);
+  else {
+    const reset = currentStart + 5 * HOUR;
+    for (let at = currentStart + 3 * MIN; at <= now; at += 6 * MIN) event(at, 0.02 + 0.64 * ((at - currentStart) / (3 * HOUR)), reset);
+  }
+  fs.mkdirSync(path.join(logDir, 'budget'), { recursive: true });
+  fs.writeFileSync(path.join(logDir, 'budget', 'rate-limits.jsonl'), lines.map((line) => `${line}\n`).join(''));
+}

@@ -23,7 +23,8 @@ import { contextWindowSuffix } from '../agent/model-name.ts';
 import type { AgentEvent, AgentRunner, ContextSnapshot, IntegrationReport, SubagentRun, TokenUsage } from '../agent/types.ts';
 import { contextWindowFor, estimateCost, totalTokens, type ModelTokenUsage, type PricingStore } from '../costs/pricing.ts';
 import { readHistory, type HistoryLog, type RunOutcome, type RunStart } from '../history/history.ts';
-import { budgetAlerts, budgetReport, usageFromHistory, type BudgetAlert, type BudgetReport } from '../budget/forecast.ts';
+import { budgetAlerts, budgetReport, usageFromHistory, type BudgetAlert, type BudgetReport, type BudgetUsage } from '../budget/forecast.ts';
+import { fiveHourSeries, type FiveHourRange, type FiveHourSeries } from '../budget/five-hour-series.ts';
 import { readTranscript, type TranscriptChunk } from '../agent/transcript.ts';
 import { defaultIntegrations } from '../integrations/registry.ts';
 import type { WorkspaceIntegration } from '../integrations/types.ts';
@@ -3932,8 +3933,17 @@ export class Orchestrator {
 
   /** Limit forecast per subscription window for GET /api/v1/budget; tokens count from `run_finished` on. */
   budget(): BudgetReport {
+    return budgetReport(this.#budgetInputs());
+  }
+
+  /** The 5-hour utilisation over time for GET /api/v1/budget/five-hour, from the same input as budget(). */
+  budgetFiveHour(range: FiveHourRange): FiveHourSeries {
+    return fiveHourSeries({ ...this.#budgetInputs(), range });
+  }
+
+  #budgetInputs(): { now: Date; usage: BudgetUsage[]; events: RateLimitRecord[] } {
     const entries = this.#deps.history ? readHistory(this.#deps.history.dir, null).entries : [];
-    return budgetReport({ now: this.#clock.now(), usage: usageFromHistory(entries), events: this.#rateLimitLog.readRateLimitEvents() });
+    return { now: this.#clock.now(), usage: usageFromHistory(entries), events: this.#rateLimitLog.readRateLimitEvents() };
   }
 
   /** Rate-limit events (optionally since a date) for the statistics page. */

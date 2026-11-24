@@ -7,6 +7,7 @@ import { computeHistoryStats, readHistory, repositoryFileName } from '../history
 import type { Logger } from '../log.ts';
 import { ACTIVITY_DEFAULT_MINUTES, ACTIVITY_MAX_MINUTES } from '../orchestrator/activity.ts';
 import type { Orchestrator } from '../orchestrator/orchestrator.ts';
+import { isFiveHourRange } from '../budget/five-hour-series.ts';
 import type { SystemSource } from '../system/metrics.ts';
 import { errorMessage } from '../util/errors.ts';
 import { AGENT_HTML } from './issue-page.ts';
@@ -155,7 +156,7 @@ const REDIRECTS: ReadonlyMap<string, string> = new Map([
  * Observability/control surface (spec 13.7): `/` dashboard, `/changes` (the feed of code changes), `/tasks` (queue columns with control actions), `/brain` (vitals, candidate review and folders),
  * `/issue?id=<identifier>` issue detail view (live, or archived once the orchestrator released the issue),
  * `/stats` statistics page with `/api/v1/history`, `/api/v1/history/analytics` and `/api/v1/history/entries`,
- * `/api/v1/state`, `/api/v1/system`, `/api/v1/budget`, `/api/v1/activity`, `/api/v1/brain/vitals` (with the derived `notes`, `links.per_note`, `reads_today.by_folder`, `clashes.week`, `commits.total`, `clash_window_min`), `/api/v1/brain/candidates`, `/api/v1/brain/access` (filters role, q, issue, limit; `before`/`next_before` page by line), `/api/v1/brain/clashes` (`status=open|resolved`, with the versions of each clash), `/api/v1/brain/graph` (`root`, `depth` 1..3, at most 150 nodes) (404 `brain_disabled` without `brain.enabled`), `/api/v1/changes` (filters type, repo, issue, limit, tz; `before` = id of the last entry of the previous page, `next_before` the id for the next), `/api/v1/<identifier>` with its `/timeline`, `/team` and `/transcript`, `POST /api/v1/refresh`
+ * `/api/v1/state`, `/api/v1/system`, `/api/v1/budget`, `/api/v1/budget/five-hour` (`range=window|day|week`, default window; the 5-hour utilisation over time), `/api/v1/activity`, `/api/v1/brain/vitals` (with the derived `notes`, `links.per_note`, `reads_today.by_folder`, `clashes.week`, `commits.total`, `clash_window_min`), `/api/v1/brain/candidates`, `/api/v1/brain/access` (filters role, q, issue, limit; `before`/`next_before` page by line), `/api/v1/brain/clashes` (`status=open|resolved`, with the versions of each clash), `/api/v1/brain/graph` (`root`, `depth` 1..3, at most 150 nodes) (404 `brain_disabled` without `brain.enabled`), `/api/v1/changes` (filters type, repo, issue, limit, tz; `before` = id of the last entry of the previous page, `next_before` the id for the next), `/api/v1/<identifier>` with its `/timeline`, `/team` and `/transcript`, `POST /api/v1/refresh`
  * `POST /api/v1/<identifier>/retry` (restart a waiting or paused worker), `/force` (Start now in an extra slot),
  * `/pause` and `/resume` (operator pause of an issue), `POST /api/v1/models/<model>/hold` and `/release` (operator pause of a model family),
  * `POST /api/v1/brain/clashes/<id>/resolve`, `POST /api/v1/brain/candidates/<path>/approve`, `/reject` and `/revert` (the path URL-encoded; revert takes back an approve or a reject), and
@@ -268,6 +269,17 @@ export function startHttpServer(options: {
     }
     if (pathname === '/api/v1/budget') {
       allow(['GET'], () => sendJson(res, 200, orchestrator.budget()));
+      return;
+    }
+    if (pathname === '/api/v1/budget/five-hour') {
+      allow(['GET'], () => {
+        const range = textParam(new URL(req.url ?? '/', 'http://localhost').searchParams, 'range') ?? 'window';
+        if (!isFiveHourRange(range)) {
+          sendError(res, 400, 'bad_request', 'range must be window, day or week');
+          return;
+        }
+        sendJson(res, 200, orchestrator.budgetFiveHour(range));
+      });
       return;
     }
     if (pathname === '/api/v1/brain/vitals' || pathname === '/api/v1/brain/candidates') {
