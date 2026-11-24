@@ -13,6 +13,8 @@
 
 import { BASE_JS } from '../styles.ts';
 import { SYMPHONY_VERSION } from '../../version.ts';
+import type { BoardLink } from '../../tracker/types.ts';
+import { isHttpsUrl } from '../../util/text.ts';
 import { iconSvg } from '../icons.ts';
 import { TOKENS_CSS } from './tokens.ts';
 
@@ -152,7 +154,8 @@ export const LAYOUT_CSS = `
   .nv[aria-current="page"]:hover, .nv.on:hover { color: #0b1220; background: #fff; }
   .shell-meta { display: flex; align-items: center; gap: 8px; flex: none; margin-left: auto; }
   .shell-budget { color: var(--fg-chip); }
-  a.shell-budget:hover { text-decoration: none; border-color: rgba(255, 255, 255, .24); }
+  .shell-board { color: var(--fg-chip); }
+  a.shell-budget:hover, a.shell-board:hover { text-decoration: none; border-color: rgba(255, 255, 255, .24); }
   .budget-pct.tone-amber { color: var(--amber); }
   .budget-pct.tone-red { color: var(--red); }
   .shell-clock { font: 15px var(--mono); font-variant-numeric: tabular-nums; color: var(--fg); padding: 0 6px; min-width: 8ch; text-align: right; }
@@ -375,6 +378,23 @@ export function escapeHtml(text: string): string {
   return String(text).replace(/[&<>"']/g, (ch) => ESCAPES[ch] as string);
 }
 
+/** Placeholder in the shell header; the server swaps it for the board chip (or nothing) on every page request. */
+export const BOARD_SLOT = '<!--shell-board-->';
+
+/** The "Board" chip that opens the polled board in a new tab; empty without a known https URL. */
+export function boardChip(board: BoardLink | null): string {
+  if (board === null || !isHttpsUrl(board.url)) return '';
+  const title = board.title.trim();
+  const open = title === '' ? 'Board auf GitHub öffnen' : `${title} auf GitHub öffnen`;
+  const label = title === '' ? `${open} (neuer Tab)` : `Board: ${open} (neuer Tab)`;
+  return `<a class="sh-chip shell-board" id="shell-board" href="${escapeHtml(board.url)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(open)}" aria-label="${escapeHtml(label)}">Board<span aria-hidden="true"> ↗</span></a>`;
+}
+
+/** Fills the board slot of a page; the replacer is a function so `function navHtml(` in a title stays literal. */
+export function fillBoardSlot(html: string, board: BoardLink | null): string {
+  return html.replace(BOARD_SLOT, () => boardChip(board));
+}
+
 function navHtml(active: NavKey | null, highlight?: NavKey): string {
   const links = NAV_ITEMS.map((item) => {
     const current = item.key === active ? ' aria-current="page"' : '';
@@ -453,6 +473,7 @@ export function page(opts: PageOptions): string {
   ${navHtml(opts.nav, opts.navHighlight)}
   <div class="shell-meta">
     <a class="sh-chip mono shell-budget" href="/#budget" id="shell-budget" title="5-h-Fenster">5h —</a>
+    ${BOARD_SLOT}
     <span class="sh-chip mono shell-version" id="shell-version" title="Symphony-Version">v${escapeHtml(SYMPHONY_VERSION)}</span>
     <time class="shell-clock mono" id="shell-clock" aria-label="Uhr" title="Uhr">--:--:--</time>${poll}
   </div>

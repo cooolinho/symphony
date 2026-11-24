@@ -219,6 +219,7 @@ describe('http extension', () => {
       'queue',
       'blocked',
       'board_fetched_at',
+      'tracker',
       'pipeline_config',
       'running',
       'retrying',

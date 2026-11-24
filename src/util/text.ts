@@ -21,3 +21,13 @@ export function numericEntries(value: unknown): Record<string, number> | null {
   const entries = Object.entries(value).filter((entry): entry is [string, number] => typeof entry[1] === 'number' && Number.isFinite(entry[1]));
   return entries.length === 0 ? null : Object.fromEntries(entries);
 }
+
+/** True for a string that parses as an absolute URL with the `https:` scheme; never throws. */
+export function isHttpsUrl(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  try {
+    return new URL(value).protocol === 'https:';
+  } catch {
+    return false;
+  }
+}

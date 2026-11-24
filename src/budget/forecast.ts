@@ -60,8 +60,8 @@ export interface BudgetAlert {
   source: 'sdk' | 'calibrated';
 }
 
-/** Tokens with `from < at <= to`,. */
-function sumTokens(usage: BudgetUsage[], from: number, to: number): number {
+/** Tokens with `from < at <= to`. */
+export function sumTokens(usage: BudgetUsage[], from: number, to: number): number {
   let sum = 0;
   for (const item of usage) {
     const at = item.at.getTime();
