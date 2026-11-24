@@ -11,6 +11,7 @@ import type {
   AddLabelsResult,
   AgentToolSpec,
   AutoMergeResult,
+  BoardLink,
   BranchPullRequest,
   Issue,
   IssueComment,
@@ -78,6 +79,8 @@ export class FakeTracker implements TrackerAdapter {
   calls = { byStates: 0, byIds: 0, statusOptions: 0, readResults: 0 };
   /** Set to give the tracker a board; adapters without it skip the column check. */
   statusOptions?: () => Promise<string[]>;
+  /** Set to give the tracker a board link (name and https URL); trackers without it have none. */
+  board?: () => Promise<BoardLink | null>;
   /** Set to report open sub-issues (roles with wait_for_sub_issues); trackers without it have none. */
   openSubIssues?: (issue: Issue) => string[];
   /** Set to record the notices Symphony posts on an issue; trackers without it cannot comment. */

@@ -30,7 +30,7 @@ import type { WorkspaceIntegration } from '../integrations/types.ts';
 import type { Logger } from '../log.ts';
 import { configuredRepositories, isRepositoryName } from '../tracker/github-project/settings.ts';
 import { getTrackerFactory } from '../tracker/registry.ts';
-import type { AutoMergeResult, Issue, MergeWatch, TrackedResult, TrackerAdapter } from '../tracker/types.ts';
+import type { AutoMergeResult, BoardLink, Issue, MergeWatch, TrackedResult, TrackerAdapter } from '../tracker/types.ts';
 import { SerialQueue, settledWithin } from '../util/async.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { numericEntries, truncate } from '../util/text.ts';
@@ -737,6 +737,7 @@ export class Orchestrator {
   #lastTrackerError: { at: Date; message: string } | null = null;
   #adapterCache: { version: number; adapter: TrackerAdapter } | null = null;
   #statusOptionsCache: { version: number; options: string[] } | null = null;
+  #boardLinkCache: { version: number; board: BoardLink | null } | null = null;
   /** The last successful board fetch: active-column candidates plus blocked-column issues, for the dashboard. */
   #board: { fetchedAt: Date; candidates: Issue[]; parked: Issue[] } | null = null;
   #listeners = new Set<() => void>();
@@ -1424,6 +1425,7 @@ export class Orchestrator {
    * the check). A failure is a tracker error, not a validation error, and is retried on the next call.
    */
   async #loadStatusOptions(workflow: EffectiveWorkflow): Promise<void> {
+    await this.#loadBoardLink(workflow);
     if (this.#statusOptionsCache?.version === workflow.version) return;
     let adapter: TrackerAdapter;
     try {
@@ -1437,6 +1439,31 @@ export class Orchestrator {
     } catch (error) {
       this.#trackerFailure('board status options fetch failed; skipping the column check', error);
     }
+  }
+
+  /** Fetches the board link once per workflow version; a failure is only logged (status options report the same error). */
+  async #loadBoardLink(workflow: EffectiveWorkflow): Promise<void> {
+    if (this.#boardLinkCache?.version === workflow.version) return;
+    let adapter: TrackerAdapter;
+    try {
+      adapter = this.#adapterFor(workflow);
+    } catch {
+      return; // reported by #validate
+    }
+    if (adapter.board === undefined) {
+      this.#boardLinkCache = { version: workflow.version, board: null };
+      return;
+    }
+    try {
+      this.#boardLinkCache = { version: workflow.version, board: await adapter.board() };
+    } catch (error) {
+      this.#logger.debug('board link fetch failed; the dashboard shows no board link', { error: errorMessage(error) });
+    }
+  }
+
+  /** The board link for the dashboard header from the cache; null before the first load or when unknown. */
+  boardLink(): BoardLink | null {
+    return this.#boardLinkCache?.board ?? null;
   }
 
   /** Columns fetched alongside the active states so the dashboard can list blocked issues. */
@@ -4081,6 +4108,7 @@ export class Orchestrator {
       queue,
       blocked,
       board_fetched_at: this.#board?.fetchedAt.toISOString() ?? null,
+      tracker: { board: this.boardLink() },
       pipeline_config: {
         board_columns: this.#statusOptionsCache?.version === workflow.version ? this.#statusOptionsCache.options : null,
         roles:

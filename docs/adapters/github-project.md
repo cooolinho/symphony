@@ -54,6 +54,13 @@ exists and that the status field is a single-select field (`invalid_tracker_conf
 metadata, no extra request). The orchestrator uses it to check that every configured column exists on the board;
 see the board preflight in [configuration.md](../configuration.md#tracker).
 
+## Board link
+
+`board()` returns `{ title, url }` of the polled project from the same cached metadata (`ProjectMeta`, no extra
+request), for the *Board ↗* chip in the dashboard header. It returns `null` when the project has no URL or the URL is
+not `https://`, so only https links reach the page. The orchestrator fetches it once per workflow version and exposes
+it as `tracker.board` in `GET /api/v1/state` (see [Dashboard and API](../usage.md#dashboard-and-api)).
+
 ## Normalization
 
 | Issue field | Source |
