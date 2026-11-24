@@ -143,7 +143,19 @@ ENV CLAUDE_CONFIG_DIR=/home/symphony/.claude \
 # agents cannot change Symphony itself.
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
+# The SDK runs Claude Code from the optional package @anthropic-ai/claude-agent-sdk-<platform>-<arch>. npm skips an
+# optional dependency whose download fails with only a warning, and the image would then fail every run with
+# "Native CLI binary ... not found". So a missing binary gets one more `npm ci`, then fails the build.
+RUN pkg="@anthropic-ai/claude-agent-sdk-$(node -p 'process.platform + "-" + process.arch')" \
+    && bin="node_modules/${pkg}/claude" \
+    && npm ci --omit=dev --no-audit --no-fund \
+    && if [ ! -x "${bin}" ]; then \
+        echo "${pkg} missing after npm ci (optional download failed?), retrying" >&2; \
+        npm ci --omit=dev --no-audit --no-fund; \
+    fi \
+    && if [ ! -x "${bin}" ]; then echo "Native Claude Code binary ${bin} missing" >&2; exit 1; fi \
+    && "${bin}" --version \
+    && npm cache clean --force
 COPY src/ ./src/
 COPY hooks/ ./hooks/
 COPY checks/ ./checks/
