@@ -8,7 +8,8 @@
   Mockup A "Masonry-Raster", abgenommen am 2026-11-24. Gehört zu konzept.md im selben Ordner.
   Eigenständig, ohne Build. Farben und Glas-Styles stammen aus src/http/ui/palette.ts, tokens.ts und layout.ts.
   Nur Demo-Daten (acme/*), keine echten Repositories, Kosten oder Hostnamen.
-  URL-Parameter: ?state=live|idle|calm (Startzustand), ?clean=1 (Mockup-Leiste ausblenden, für Vorschaubilder).
+  URL-Parameter: ?state=live|idle|calm (Startzustand), ?alerts=1 (Glocken-Modal offen), ?clean=1 (Mockup-Leiste ausblenden, für Vorschaubilder).
+  Version 2 (2026-11-24): Limit-Prognosen stehen im Context-Budget, alle anderen Alerts hinter der Glocke in der Kopfleiste.
 -->
 <style>
   :root {
@@ -124,14 +125,46 @@
   .team-time { font: 15px var(--mono); }
   .team-subs { font-size: 12px; color: var(--fg-3); }
 
-  /* Alerts */
+  /* Glocke in der Kopfleiste: Zahl der aktiven Alerts, rot sobald ein roter Alert dabei ist; wackelt, solange ungesehen */
+  .bell { position: relative; width: 40px; height: 40px; padding: 0; display: grid; place-items: center; border-radius: 999px; cursor: pointer;
+    color: var(--fg-chip); background: rgba(255, 255, 255, .05); border: 1px solid rgba(255, 255, 255, .12); }
+  .bell:hover { border-color: rgba(255, 255, 255, .24); color: var(--fg-strong); }
+  .bell:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+  .bell svg { width: 18px; height: 18px; }
+  .bell .n { position: absolute; top: -5px; right: -5px; min-width: 19px; height: 19px; padding: 0 5px; border-radius: 999px; display: grid; place-items: center;
+    font: 600 10.5px var(--mono); color: #fff; background: #dc2626; border: 2px solid var(--bg); }
+  .bell .n.amber { background: #d97706; }
+  .bell.unseen svg { animation: ring 2.4s ease-in-out infinite; transform-origin: 50% 10%; }
+  @keyframes ring { 0%, 86%, 100% { transform: rotate(0); } 89% { transform: rotate(14deg); } 93% { transform: rotate(-12deg); } 96% { transform: rotate(6deg); } }
+
+  /* Alerts-Modal (native <dialog>, Esc schließt, Fokus zurück auf die Glocke) */
+  dialog.alerts-modal { width: min(560px, calc(100vw - 2 * var(--edge))); max-height: min(80vh, 720px); padding: 0; color: var(--fg);
+    background: #0f1729; border: 1px solid rgba(255, 255, 255, .14); border-radius: 20px; box-shadow: 0 30px 80px -20px rgba(0, 0, 0, .9); }
+  dialog.alerts-modal::backdrop { background: rgba(3, 6, 14, .62); -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px); }
+  .am-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 16px 18px 10px; }
+  .am-head h2 { margin: 0; font-size: 17px; font-weight: 600; }
+  .am-close { font: 12px var(--mono); color: var(--fg); background: rgba(255, 255, 255, .06); border: 1px solid rgba(255, 255, 255, .14); border-radius: 999px; padding: 5px 12px; cursor: pointer; }
+  .am-body { padding: 0 18px 18px; overflow-y: auto; max-height: calc(min(80vh, 720px) - 64px); display: grid; gap: 14px; }
+  .am-sec { display: grid; gap: 8px; }
   .alerts { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
-  .alert { padding: 10px 12px; border-radius: 12px; border: 1px solid rgba(251, 191, 36, .35); background: rgba(251, 191, 36, .06); }
-  .alert .k { font: 600 10.5px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--amber); display: flex; justify-content: space-between; }
+  .alert { display: block; padding: 10px 12px; border-radius: 12px; color: inherit; border: 1px solid rgba(251, 191, 36, .35); background: rgba(251, 191, 36, .06); }
+  .alert:hover { text-decoration: none; background: rgba(251, 191, 36, .1); }
+  .alert.red { border-color: rgba(248, 113, 113, .42); background: rgba(248, 113, 113, .07); }
+  .alert.red .k span:first-child { color: var(--red-300); }
+  .alert.done { border-color: rgba(255, 255, 255, .08); background: rgba(255, 255, 255, .03); opacity: .8; }
+  .alert.done .k span:first-child { color: var(--fg-3); }
+  .alert .k { font: 600 10.5px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--amber); display: flex; justify-content: space-between; gap: 8px; }
   .alert .k span:last-child { color: var(--fg-3); letter-spacing: 0; text-transform: none; font-weight: 400; }
   .alert b { display: block; font-size: 14px; font-weight: 600; margin: 2px 0 1px; }
   .alert p { margin: 0; font-size: 12.5px; color: var(--fg-2); }
-  .badge-n { min-width: 22px; height: 22px; border-radius: 999px; display: grid; place-items: center; font: 600 11px var(--mono); color: #fecaca; background: rgba(248, 113, 113, .2); }
+  .am-foot { font-size: 12px; color: var(--fg-3); margin: 0; }
+
+  /* Limit-Prognose direkt im Context-Budget (früher eigene Alert-Karten) */
+  .fc { display: flex; align-items: flex-start; gap: 8px; margin-top: 4px; padding: 7px 10px; border-radius: 10px; font-size: 12.5px;
+    color: var(--amber-300); background: rgba(251, 191, 36, .08); border: 1px solid rgba(251, 191, 36, .3); }
+  .fc.red { color: var(--red-300); background: rgba(248, 113, 113, .08); border-color: rgba(248, 113, 113, .35); }
+  .fc b { font-weight: 600; }
+  .fc .fc-k { font: 600 10px var(--mono); letter-spacing: .12em; text-transform: uppercase; white-space: nowrap; padding-top: 2px; }
 
   /* Context-Budget */
   .bud { display: grid; gap: 4px; margin-bottom: 10px; }
@@ -207,7 +240,7 @@
     .acc .op { display: none; }
     .acc .note { grid-column: 1 / -1; padding-left: 64px; margin-top: -4px; }
   }
-  @media (prefers-reduced-motion: reduce) { .eq i { animation: none; height: 8px; } }
+  @media (prefers-reduced-motion: reduce) { .eq i { animation: none; height: 8px; } .bell.unseen svg { animation: none; } }
 </style>
 </head>
 <body>
@@ -224,6 +257,7 @@
   <button type="button" data-state="live" aria-pressed="true">2 Teams laufen</button>
   <button type="button" data-state="idle" aria-pressed="false">Idle</button>
   <button type="button" data-state="calm" aria-pressed="false">Alerts leer</button>
+  <button type="button" id="mock-bell">Glocke öffnen</button>
   <span class="sp" id="mock-info">–</span>
 </div>
 
@@ -235,7 +269,12 @@
       <a class="nv on" href="#" aria-current="page">Übersicht</a><a class="nv" href="#">Changes</a><a class="nv" href="#">Tasks</a><a class="nv" href="#">Brain</a><a class="nv" href="#">Statistik</a>
     </div></nav>
     <div class="meta">
-      <span class="chip amber">5h 55 %</span><span class="chip">Board ↗</span><span class="chip version">v1.9.0</span>
+      <span class="chip amber">5h 55 %</span><span class="chip">Board ↗</span>
+      <button type="button" class="bell unseen" id="bell" aria-haspopup="dialog" aria-controls="alerts-modal" aria-label="Alerts: 3 aktiv, davon 1 Fehler">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 16V11a6 6 0 1 1 12 0v5l1.5 2h-15z"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>
+        <span class="n" id="bell-n">3</span>
+      </button>
+      <span class="chip version">v1.9.0</span>
       <span class="clock num" id="clock">19:10:20</span>
     </div>
   </header>
@@ -297,21 +336,13 @@
       <p class="empty" id="teams-empty" hidden><span class="dot" style="background:var(--gray)"></span>Kein Team spielt gerade · 0 Slots belegt · 0 in der Queue</p>
     </section>
 
-    <section class="g card" aria-labelledby="t-alerts">
-      <div class="card-head"><h2 class="lbl" id="t-alerts">Alerts</h2><span class="badge-n" id="alerts-n">2</span></div>
-      <ul class="alerts" id="alerts-list">
-        <li class="alert"><div class="k"><span>Limit-Prognose</span><span>gerade eben</span></div><b>5-h-Limit in Sicht</b><p>5-h-Fenster bei 55 % · Limit ca. 19:40 · Reset 23:10</p></li>
-        <li class="alert"><div class="k"><span>Limit-Prognose</span><span>gerade eben</span></div><b>7-Tage-Limit in Sicht</b><p>7-Tage-Fenster bei 100 % · Reset 10:00</p></li>
-      </ul>
-      <p class="empty" id="alerts-empty" hidden><span class="dot"></span>Alles ruhig</p>
-    </section>
-
     <section class="g card" aria-labelledby="t-budget">
       <div class="card-head"><h2 class="lbl" id="t-budget">Context-Budget · heute</h2><a href="#">Verlauf →</a></div>
       <div class="bud">
         <div class="bud-top"><b>5-h-Fenster</b><span class="num" style="color:var(--amber)">55 %</span></div>
         <div class="bar lg"><i style="width:55%;background:var(--amber)"></i></div>
-        <span class="muted">Burn 5.4M Tokens/h · Limit ca. 19:40 · Reset 23:10</span>
+        <span class="muted">Burn 5.4M Tokens/h · Reset 23:10</span>
+        <div class="fc" role="status"><span class="fc-k">Prognose</span><span><b>5-h-Limit in Sicht</b> · Limit ca. 19:40, 3 h 30 min vor dem Reset</span></div>
       </div>
       <details class="gi graph" open>
         <summary><span class="lbl">Auslastung 5-h-Fenster</span></summary>
@@ -330,7 +361,8 @@
       <div class="bud">
         <div class="bud-top"><b>Woche</b><span class="num" style="color:var(--red)">100 %</span></div>
         <div class="bar lg"><i style="width:100%;background:var(--red)"></i></div>
-        <span class="muted">Limit erreicht · pausiert bis 10:01</span>
+        <span class="muted">Reset 25.11. 10:00</span>
+        <div class="fc red" role="status"><span class="fc-k">Limit</span><span><b>7-Tage-Limit erreicht</b> · Dispatch pausiert bis 10:01</span></div>
       </div>
     </section>
 
@@ -412,6 +444,29 @@
   </main>
 </div>
 
+<dialog class="alerts-modal" id="alerts-modal" aria-labelledby="am-title">
+  <div class="am-head"><h2 id="am-title">Alerts</h2><button type="button" class="am-close" id="am-close">Esc ✕</button></div>
+  <div class="am-body">
+    <section class="am-sec" id="am-active" aria-labelledby="am-active-t">
+      <h3 class="lbl" id="am-active-t">Aktiv · 3</h3>
+      <ul class="alerts">
+        <li><a class="alert red" href="#"><div class="k"><span>Fehler</span><span>vor 2 min</span></div><b>Tracker</b><p>GitHub GraphQL: 502 Bad Gateway beim Board-Abruf</p></a></li>
+        <li><a class="alert" href="#"><div class="k"><span>needs-human</span><span>vor 18 min</span></div><b>acme/app#377 · Export als CSV</b><p>Nach 2 Review-Runden an dich übergeben.</p></a></li>
+        <li><a class="alert" href="#"><div class="k"><span>Kandidaten-Rückstau</span><span>—</span></div><b>27 Kandidaten warten auf Review</b><p>Rückstau ab 25 Kandidaten.</p></a></li>
+      </ul>
+    </section>
+    <p class="empty" id="am-empty" hidden><span class="dot"></span>Alles ruhig. Kein aktiver Alert.</p>
+    <section class="am-sec" aria-labelledby="am-done-t">
+      <h3 class="lbl" id="am-done-t">Zuletzt erledigt</h3>
+      <ul class="alerts">
+        <li><a class="alert done" href="#"><div class="k"><span>Model-Hold</span><span>17:20–18:05</span></div><b>Modell fable</b><p>fable pausiert · Limit bis 18:05</p></a></li>
+        <li><a class="alert done" href="#"><div class="k"><span>Write-Clash</span><span>16:02–16:40</span></div><b>Decisions/ledger-double-entry.md</b><p>Reviewer #12 wollte 3 min nach Developer #11 schreiben – abgewiesen.</p></a></li>
+      </ul>
+    </section>
+    <p class="am-foot">Limit-Prognosen stehen im Context-Budget, nicht hier.</p>
+  </div>
+</dialog>
+
 <script>
 (() => {
   const $ = (id) => document.getElementById(id);
@@ -463,10 +518,22 @@
     $('subtitle').textContent = idle ? '0 Teams spielen · 0 warten auf einen Slot · letzter Poll vor 2 s'
       : '2 Teams spielen · 1 wartet auf einen Slot · letzter Poll vor 2 s';
     const calm = s === 'calm';
-    $('alerts-list').hidden = calm; $('alerts-empty').hidden = !calm; $('alerts-n').hidden = calm;
+    $('am-active').hidden = calm; $('am-empty').hidden = !calm; $('bell-n').hidden = calm;
+    $('bell').classList.toggle('unseen', !calm);
+    $('bell').setAttribute('aria-label', calm ? 'Alerts: keine aktiven' : 'Alerts: 3 aktiv, davon 1 Fehler');
   }
   for (const b of document.querySelectorAll('[data-state]')) b.addEventListener('click', () => setState(b.dataset.state));
   setState(['live', 'idle', 'calm'].includes(params.get('state')) ? params.get('state') : 'live');
+
+  // Glocke: öffnet das Modal; danach gelten die aktiven Alerts als gesehen (kein Wackeln mehr, die Zahl bleibt).
+  const modal = $('alerts-modal');
+  const openAlerts = () => { if (!modal.open) modal.showModal(); $('bell').classList.remove('unseen'); };
+  $('bell').addEventListener('click', openAlerts);
+  $('mock-bell').addEventListener('click', openAlerts);
+  $('am-close').addEventListener('click', () => modal.close());
+  modal.addEventListener('click', (e) => { if (e.target === modal) modal.close(); });
+  modal.addEventListener('close', () => $('bell').focus());
+  if (params.get('alerts') === '1') openAlerts();
 
   // Uhr und Laufzeiten ticken wie beim Poll; die Karten bleiben dabei stehen.
   const pad = (n) => String(n).padStart(2, '0');
