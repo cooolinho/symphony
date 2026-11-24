@@ -96,7 +96,7 @@ function setup(
           prompts.push(text);
           const tool = params.tools.find((spec) => spec.name === 'report_diagnosis');
           await tool?.execute(
-            { cause: 'missing_result', evidence: ['commits pushed'], cause_gone: true, comment: 'Finish the result.', target_column: 'In progress', confidence: 'high', ...diagnosis },
+            { cause: 'missing_result', evidence: ['commits pushed'], cause_gone: true, fixable_in_target: false, comment: 'Finish the result.', target_column: 'In progress', confidence: 'high', ...diagnosis },
             params.toolContext(),
           );
           params.onEvent({ event: 'turn_completed', timestamp: new Date(), pid: null, threadId: 't', turnId: '1', sessionId: 't-1', turnCount: 1, costUsd: 0.42 });

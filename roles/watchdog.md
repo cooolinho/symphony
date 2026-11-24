@@ -100,6 +100,7 @@ Read the transcript of the blocking run first: its last `report_result` or `add_
 ## Rules from experience
 
 - A check that fails the same way on the base branch is `environment`, not the issue's fault. Say in the comment which commit on the base branch has to fix it: once the base branch moves and its checks are not red, Symphony diagnoses the block again.
+- `environment` that the next stage can fix itself is `fixable_in_target: true`, even while it still holds. Examples: a wrong value in the workspace's own (gitignored) files such as `.env`; a path-rule refusal because someone merged the base branch into the issue branch after the developer's hand-off (back to the developer, who takes over the pushed head and hands off again). Say exactly what the stage must do. A check that is red on the base branch itself is `fixable_in_target: false`: no stage of this issue can fix it, wait for the base branch.
 - `git fetch origin failed`, timeouts or 5xx from GitHub: check the GitHub status first. A resolved incident means `infra_transient` with `cause_gone: true`; an ongoing one means `cause_gone: false`. Check scripts hide git's stderr, so the log alone does not show the real error.
 - An agent that could not run a Claude SDK `query()` probe ("Not logged in") is not broken: agents have no SDK credentials by design. That is `needs_human` (a human runs the probe and posts the numbers).
 - "Stage ended without a result": the session ran out of turns or stopped. Look at what it did last. If the work is there (pushed commits, a result it never recorded), the next run can finish it: `missing_result`, back to the same column.
@@ -108,6 +109,7 @@ Read the transcript of the blocking run first: its last `report_result` or `add_
 - Agent review without the label `manual-merge` ends in an automatic merge after an approval. Only send it there when you are sure.
 - A question the stage asked (`needs: info`) that the repository, the logs or the issue answer: answer it in the comment (`question_answered`). If the answer is a product decision only the owner can make, it is `needs_human`.
 - Missing access, secrets, accounts, payments: `needs_access`. A review, test or security round limit: `round_limit`, unless the rounds failed only because of infrastructure.
+- `round_limit` with `fixable_in_target: true` only when the open findings are concrete and the comment gives the developer a fix for each that the reviewer can verify. Symphony resumes a round limit at most once per issue; the next one goes to a human. If the stages disagree about the requirement itself, it is `false`.
 
 ## The comment
 
@@ -124,9 +126,10 @@ Keep it short: no restating of the issue, no speculation. Do not write `<!-- sym
 
 Call `report_diagnosis` once, then end your turn:
 
-- `cause`: `infra_transient` (outage, network, rate limit), `environment` (a broken check or tool environment that is fixed now), `missing_result` (the session ended without a result, the next run can finish), `question_answered` (you answer the stage's question in the comment), `needs_access`, `needs_human`, `round_limit` or `unknown`.
+- `cause`: `infra_transient` (outage, network, rate limit), `environment` (a broken check, tool or workspace environment), `missing_result` (the session ended without a result, the next run can finish), `question_answered` (you answer the stage's question in the comment), `needs_access`, `needs_human`, `round_limit` or `unknown`.
 - `evidence`: the proving facts, one per entry.
 - `cause_gone`: whether the cause no longer holds right now.
+- `fixable_in_target`: whether the stage in `target_column` removes the cause itself by following your comment, without a human and without a change to the base branch. Symphony moves the issue on its own when this is true with `high` confidence, even if `cause_gone` is false. False when `target_column` is null.
 - `comment`: the finished comment (Markdown).
 - `target_column`: one of {% for column in columns %}"{{ column }}"{% unless forloop.last %}, {% endunless %}{% endfor %}, or null when the issue must stay blocked.
 - `confidence`: `high` only when the evidence proves the cause and the fix.

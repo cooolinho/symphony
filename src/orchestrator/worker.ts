@@ -41,7 +41,7 @@ import { maxColumnCheckMs, normalizeStateName, type ServiceConfig } from '../wor
 import { EMPTY_RESULTS, issueTemplateValue, renderPrompt } from '../workflow/template.ts';
 import { writeAttachments, type AttachmentFile } from '../workspace/attachments.ts';
 import { changedFiles, commitStats, type CommitStat } from '../workspace/changes.ts';
-import { baselineCommit, changedFilesSince, isAncestor } from './changed-files.ts';
+import { baselineCommit, isAncestor, ownChangedFiles } from './changed-files.ts';
 import { integrateBase } from './integrate-base.ts';
 import { createGuard, guardTools, toolsForRole, type CheckCache, type CheckRecord, type GateRun, type GuardParams } from './guard.ts';
 import { createResultTool, resultReminder, type LessonFacts, type PathRule, type ResultToolAdapter, type ResultToolParams } from './result-tool.ts';
@@ -254,14 +254,23 @@ interface ResultSupport {
  * pull requests between the hand-off and its start. Without a commit to measure from (not a git checkout, or git failed) the rule
  * cannot be evaluated: it refuses to guess, so the result is not accepted unchecked.
  */
-function testPathRule(workspacePath: string, testPaths: readonly string[], startSha: string | null, startOnBase: boolean, handoffSha: string | null, extra: Pick<PathRule, 'setting' | 'guidance'> = {}): PathRule {
+function testPathRule(
+  workspacePath: string,
+  testPaths: readonly string[],
+  startSha: string | null,
+  startOnBase: boolean,
+  handoffSha: string | null,
+  baseRef: string | null,
+  extra: Pick<PathRule, 'setting' | 'guidance'> = {},
+): PathRule {
   return {
     ...extra,
     allowed: testPaths,
     changedFiles: async () => {
       const base = await baselineCommit(workspacePath, handoffSha, startSha, startOnBase);
       if (base === null) throw new SymphonyError('paths_unverifiable', 'the commit this session started from is unknown');
-      return { base, files: await changedFilesSince(workspacePath, base) };
+      const changed = await ownChangedFiles(workspacePath, base, baseRef);
+      return { base, files: changed.files, excludedBase: changed.excludedBase };
     },
   };
 }
@@ -694,12 +703,14 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     const startSha = (await readGitHead(activeWorkspace.path))?.headSha ?? null;
     // Fixed before the agent acts, so a push of its own cannot move the baseline; false when git cannot tell.
     const startOnBase = (role?.result === 'test' || role?.result === 'docs') && startSha !== null && (await isAncestor(activeWorkspace.path, startSha, securityBaseRef(issue.native_ref?.base_branch)));
+    // Changes a merge of the base branch brought onto the issue branch are not the stage's own.
+    const pathBaseRef = securityBaseRef(issue.native_ref?.base_branch);
     const pathRule =
       role?.result === 'test'
-        ? (history: StageHistory) => testPathRule(activeWorkspace.path, paths.testPaths, startSha, startOnBase, implementationHead(history))
+        ? (history: StageHistory) => testPathRule(activeWorkspace.path, paths.testPaths, startSha, startOnBase, implementationHead(history), pathBaseRef)
         : role?.result === 'docs'
           ? (history: StageHistory) =>
-              testPathRule(activeWorkspace.path, paths.docsPaths, startSha, startOnBase, docsBaseHead(history), {
+              testPathRule(activeWorkspace.path, paths.docsPaths, startSha, startOnBase, docsBaseHead(history), pathBaseRef, {
                 setting: 'pipeline.docs_paths',
                 guidance: 'Code and tests belong to the developer and the test engineer: leave them alone and report the verdict `blocked` if the documentation cannot be written without changing them.',
               })
