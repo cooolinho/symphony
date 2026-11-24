@@ -16,6 +16,11 @@ Title: `(E<n>) Epic: <area>`, e.g. `(E2) Epic: Invoices` · Labels: `epic`, `con
 ## Reference to the concept
 `<path>` – <section or quote>
 
+## Mockups and screenshots
+<Only if the concept has images for this area: overview images of the whole area; single screens belong to their issues.>
+![<what it shows: screen, viewport, state>](https://<host>/<owner>/<repo>/blob/<full commit hash>/<path>?raw=true)
+`<path>` – <concept section>
+
 ## Content
 <The issues are listed below as sub-issues. Here only what connects them: order, shared decisions.>
 <References to other epics: "builds on #<n>".>
@@ -42,12 +47,19 @@ Blocked by #<n>
 ## Reference to the concept
 `<path>` – <section or quote>
 
+## Mockups and screenshots
+<Only for issues with images; remove the section otherwise. One image per screen, the picture is embedded, not just linked.>
+![<what it shows: screen, viewport, state>](https://<host>/<owner>/<repo>/blob/<full commit hash>/<path>?raw=true)
+`<path>` – <concept section>. Open the file with the Read tool: layout, order, labels and texts follow it.
+<Not embeddable (HTML, PDF, SVG, Figma, other site): name it here as text with its path or link and say that it cannot be opened.>
+
 ## Starting point
 `<file>:<line>` / `<route>` / `<resource>`: <what exists or is missing today; for something new: where it connects>
 
 ## Acceptance criteria
 - [ ] <verifiable criterion>
 - [ ] <verifiable criterion, including permissions: who may, who may not>
+- [ ] <only with an image: the result matches the mockup above in <layout, order, labels, texts, states>; deviations are named in the pull request>
 
 ## Tests
 - <feature, Livewire or Filament test that proves the criteria>
@@ -58,6 +70,10 @@ Blocked by #<n>
 Category: <feature|design|quality|maintenance> · Size: <S|M> · Risk: <low|medium|high> ·
 Part of epic #<epic> in concept #<concept issue>.
 ```
+
+The section "Mockups and screenshots" is only there if the plan assigns images to the issue. The link is always built as
+`https://<host>/<owner>/<repo>/blob/<full commit hash>/<url-encoded path>?raw=true` (host, owner and repository from the
+issue URL, the hash from Phase 1); this form also works in private repositories.
 
 The line `Blocked by #<n>` is only there for issues with a dependency, directly below the goal. A pure refactoring
 starts with `/refactor-safely` on the first line; `Blocked by` follows below it.
@@ -86,6 +102,14 @@ E1-1, E1-2, E2-1, …
 | <section> | present (`<file>`) |
 | <section> | not created: <reason> |
 
+### Mockups and screenshots
+Only if the concept has images. **Image commit:** `<full commit hash>` · host/repository: `<host>/<owner>/<repo>`
+
+| Image | Shows | Embedded in |
+|---|---|---|
+| `<path>` | <screen, viewport, state> | E1, E1-2, E1-3 |
+| `<path>` | <…> | not embedded: <reason: format, missing, non-goal> |
+
 ### Assumptions and questions
 - <assumption or open question>
 ```
@@ -106,6 +130,11 @@ E1-1, E1-2, E2-1, …
 
 ### Not created
 - <requirement>: <reason: present, non-goal, open question, limit>
+
+### Mockups and screenshots
+Only if the concept has images.
+- `<path>`: embedded in #<n>, #<m>
+- `<path>`: not embedded: <reason, e.g. HTML mockup: please add a PNG export; file missing on the base commit; non-goal>
 
 ### Open questions
 - <decision a human should make, and what depends on it>

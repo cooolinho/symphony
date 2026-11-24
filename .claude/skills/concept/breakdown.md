@@ -24,6 +24,9 @@ the dependencies, not from the numbering.
   needs, names the **concept section** and says what does **not** belong to it.
 - **Design issues** (the planner never sees the rendered page; the developer checks it with screenshots): concrete criteria with Filament component, columns, filters,
   actions, texts, empty and error states and which role sees what. Never "make it nicer". A visual issue demands "Screenshots" (pages or panels, viewports, demo login, `docs/screenshots/`). Screenshots or a visual check are impossible only for a concrete reason from the repository, cited as file:line (no web interface, an external service or login without a local substitute, a stack that does not run with SQLite and `php -S`); "needs a running app", "no browser" and "no frontend build" are no reasons.
+- **Mockups and screenshots** the concept names for this issue are embedded in it as images
+  ([rules](#mockups-and-screenshots)). The criteria still say in words what is binding: the image shows, the criteria
+  decide.
 - Anything unclear stays a **question in the report**, not an issue. That also applies to decisions a human has to
   make: legal matters, prices, texts with legal effect, external services that cost money.
 - Title: `(E<n>-<m>) <Feature|Design|Quality|Maintenance>: <what changes>`, short and unambiguous. The title is the
@@ -31,6 +34,28 @@ the dependencies, not from the numbering.
 - A major upgrade (Laravel, Filament, PHP) stands alone in its epic and additionally gets `manual-merge`.
 - A pure refactoring without behaviour change starts with `/refactor-safely` on the first line (dependencies go below
   it). If the area lacks tests, it waits for an issue that writes them.
+
+## Mockups and screenshots
+
+The concept's mockups and screenshots are part of the requirements. The planner and the developer only work from what the
+issue contains, so the pictures belong **in the issues, as images**, not as a file name in the text.
+
+- **Which images:** those the concept (and the files it links) embeds or names, and that lie in the repository as PNG,
+  JPG, JPEG, WebP or GIF. You never create, copy, move or convert images; you only link what is there.
+- **Where:** an image goes into every issue that implements what it shows. An overview image that spans several issues
+  of one epic goes into the epic and also into each issue that needs it. One screen per image is
+  the normal case. More than four images in one issue are a sign that it is cut too big: split it.
+- **How:** Markdown image with a meaningful alt text (screen, viewport, state), then one line with the repository path
+  and the concept section, so the developer can open the file with the Read tool (Symphony downloads only files
+  uploaded to the issue, not repository files). The link is built from the host, owner and repository of the issue and the
+  full commit hash of the concept ([SKILL.md](SKILL.md#phase-1-read-the-concept)); format in [templates.md](templates.md#sub-issue).
+- **Acceptance criteria:** an issue with an image has at least one criterion that ties the result to it (layout, order,
+  labels, texts, states shown) and, for a visual issue, the "Screenshots" demand from above, so the developer compares the
+  result with the mockup. Where the image and the concept text contradict each other, that is a question in the report; the
+  issue names the contradiction instead of choosing silently.
+- **Not embeddable:** HTML mockups, PDFs, SVGs, Figma links and images on other sites. The issue names them as text with their
+  path or link and says that the developer cannot open them, and the report asks for a PNG export.
+- **Missing:** a file the concept names that is not on the base commit is an open question, never a made-up image.
 
 ## Dependencies
 

@@ -690,7 +690,9 @@ only start when you move them to **Ready**. The instructions are in the skill
 
 1. **Concept:** a Markdown file on the base branch (`SYMPHONY_BASE_BRANCH`, otherwise the default branch), because
    that is what the agent clones. It also reads relatively linked `.md` files one level deep. Goal, roles, functional
-   areas, flows, non-goals and open questions make a good concept.
+   areas, flows, non-goals and open questions make a good concept. **Mockups and screenshots** that the concept embeds
+   or names (PNG, JPG, WebP or GIF, committed to the repository next to the concept) are shown as images in the epics
+   and issues they belong to, see below.
 2. **Labels:** `npm run repo-init` → *Standard labels* creates `concept`, `epic`, the `Model: …` and `Effort: …` labels
    and the categories. If a label is missing, the agent creates the issue without it and says so in the report.
 3. **Issue:** description `/concept docs/index.md`, optionally `issue-models=auto|fable|opus|sonnet|haiku|off` (default
@@ -706,10 +708,22 @@ Check with `npm run dry-run`: the issue shows up with `role=analyst` and `↳ co
 2. It cuts epics (2 to 10 issues, functionally self-contained) and issues (mergeable on their own, size S or M) and
    orders them by their dependencies. Every requirement of the concept ends up in an issue or under "Not created";
    gaps become questions, not invented issues.
-3. It posts the comment **`## Concept Plan`** **before** it creates anything: tree, labels, order and a coverage list.
-4. It creates epics and issues, blockers first. An epic is created when its first issue is due.
+3. It posts the comment **`## Concept Plan`** **before** it creates anything: tree, labels, order, a coverage list and,
+   if the concept has images, which image goes into which issue.
+4. It creates epics and issues, blockers first. An epic is created when its first issue is due. Issues with images get
+   a section "Mockups and screenshots" with the pictures embedded (see below).
 5. It posts **`## Concept Report`** with the tree including issue numbers, the reason for model and effort per issue,
    "Not created", open questions and notes. The concept issue moves to **In review**.
+
+**Mockups and screenshots in the issues.** The agent opens every image the concept (and the Markdown files it links)
+embeds or names, assigns it by what it shows, and embeds it as a picture in every epic or issue that implements it, so
+you see it when you open the issue. The link is built from the issue URL and the commit of the concept
+(`https://github.com/<owner>/<repo>/blob/<commit>/<path>?raw=true`, which also works in private repositories) and stays
+the same even if the file changes later. The issue also names the file's path, because the developer opens it from the
+checkout, and carries a criterion that ties the result to the mockup. Not embeddable are HTML mockups, PDFs, SVGs, Figma
+links and images on other sites, and files that are not on the base branch: the report lists them and asks for a PNG
+export. The agent never creates or converts images. An addendum embeds new images only in the issues it creates; it
+cannot change existing issues.
 
 The two comment headings are always English, whatever the language of the concept, because later runs search for them.
 Concept issues started before the skill was translated may carry `## Konzept-Plan` and `## Konzept-Bericht`; the agent
