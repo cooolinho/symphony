@@ -14,6 +14,7 @@ import { BRAIN_HTML } from './brain-page.ts';
 import { CHANGES_HTML } from './changes-page.ts';
 import { DASHBOARD_HTML } from './dashboard.ts';
 import { ChangeEvents } from './events.ts';
+import { fillBoardSlot } from './ui/layout.ts';
 import { LOGS_HTML } from './logs-page.ts';
 import { TASKS_HTML } from './tasks-page.ts';
 
@@ -240,7 +241,7 @@ export function startHttpServer(options: {
     if (pageHtml !== undefined) {
       allow(['GET', 'HEAD'], () => {
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-        res.end(method === 'HEAD' ? undefined : pageHtml);
+        res.end(method === 'HEAD' ? undefined : fillBoardSlot(pageHtml, orchestrator.boardLink()));
       });
       return;
     }

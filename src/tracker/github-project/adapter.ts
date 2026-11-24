@@ -1,5 +1,6 @@
 import type { Logger } from '../../log.ts';
 import { errorMessage } from '../../util/errors.ts';
+import { isHttpsUrl } from '../../util/text.ts';
 import { decodeMarker } from '../../workflow/results.ts';
 import { normalizeStateName } from '../../workflow/config.ts';
 import {
@@ -7,6 +8,7 @@ import {
   type AddLabelsResult,
   type AgentToolSpec,
   type AutoMergeResult,
+  type BoardLink,
   type BranchPullRequest,
   type PullRequestComment,
   type CheckStatus,
@@ -305,6 +307,11 @@ export class GithubProjectAdapter implements TrackerAdapter {
       }
       applyDispatchRules(outcome.issue, outcome.gates, this.settings);
     }
+  }
+
+  async board(): Promise<BoardLink | null> {
+    const meta = await this.meta();
+    return isHttpsUrl(meta.url) ? { title: meta.title.trim(), url: meta.url } : null;
   }
 
   async statusOptions(): Promise<string[]> {

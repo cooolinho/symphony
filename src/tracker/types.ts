@@ -280,6 +280,12 @@ export interface TrackerApiBudget {
 }
 
 /** The read kernel the orchestrator needs (spec 11.1), plus optional agent tools (spec 10.5). */
+/** The tracker's board as the dashboard links to it. */
+export interface BoardLink {
+  title: string;
+  url: string;
+}
+
 export interface TrackerAdapter {
   readonly kind: string;
   fetchIssuesByStates(stateNames: string[]): Promise<Issue[]>;
@@ -289,6 +295,8 @@ export interface TrackerAdapter {
   hookEnvironment?(issue: Issue): Record<string, string>;
   /** Names of the board's status columns, for the preflight check of the configured columns. */
   statusOptions?(): Promise<string[]>;
+  /** Name and URL of the board for the dashboard's board link; null when unknown or not https. */
+  board?(): Promise<BoardLink | null>;
   /** Repository the issue belongs to (`owner/name`), used to group the run history. */
   issueRepository?(issue: Issue): string | null;
   /** Identifiers of the issue's open sub-issues, for roles with `wait_for_sub_issues`; absent = the tracker has none. */

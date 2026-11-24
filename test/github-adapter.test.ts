@@ -434,6 +434,29 @@ describe('github_project error mapping', () => {
     assert.equal(await category((g) => g.overrides.set('SymphonyProjectMeta', () => ({ body: { data: { repositoryOwner: null } } }))), 'invalid_tracker_config');
   });
 
+  it('board() passes title and https URL of the project meta through with one meta request', async () => {
+    const github = new FakeGithub();
+    const tracker = adapter(github);
+    assert.deepEqual(await tracker.board?.(), { title: 'Board', url: 'https://github.com/users/acme/projects/1' });
+    await tracker.statusOptions?.();
+    assert.equal(github.requests.filter((r) => r.op === 'SymphonyProjectMeta').length, 1);
+  });
+
+  it('board() is null when the project URL is missing or not https', async () => {
+    for (const url of [null, 'http://github.com/users/acme/projects/1', 'javascript:alert(1)']) {
+      const github = new FakeGithub();
+      const real = github.fetch;
+      github.fetch = async (u, init) => {
+        const res = await real(u, init);
+        const body = (await res.json()) as { data?: { repositoryOwner?: { projectV2?: { url?: unknown } } } };
+        const project = body.data?.repositoryOwner?.projectV2;
+        if (project !== undefined) project.url = url;
+        return new Response(JSON.stringify(body), { status: res.status });
+      };
+      assert.equal(await adapter(github).board?.(), null, String(url));
+    }
+  });
+
   it('retries queries after transient 5xx errors, but never mutations', async () => {
     const github = new FakeGithub().add(itemNode('A'));
     let metaCalls = 0;
