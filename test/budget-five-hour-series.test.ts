@@ -140,3 +140,52 @@ describe('fiveHourSeries', () => {
     assert.deepEqual(series.windows[0]!.points.map((p) => p.percent), [100]);
   });
 });
+
+describe('fiveHourSeries: review round (source per point, calibrated windows, forecast line)', () => {
+  const use = (ago: number, tokens: number): BudgetUsage => ({ at: new Date(now.getTime() - ago), tokens });
+
+  it('keeps the SDK values of past windows when /api/v1/budget is calibrated (reset passed, earlier rejected)', () => {
+    // a rejected event without utilisation 20 h ago calibrates a limit; both later SDK windows have reset already
+    const events = [rejected(20 * HOUR, -15 * HOUR), five(10 * HOUR, 0.6, -6 * HOUR), five(6.5 * HOUR, 1.3, -1.5 * HOUR)];
+    const usage = [use(21 * HOUR, 1000), use(10.5 * HOUR, 400), use(7 * HOUR, 1000)];
+    const bar = forecastBudget({ now, usage, events, window: 'five_hour' });
+    assert.equal(bar.percent_source, 'calibrated');
+    for (const range of ['day', 'week'] as const) {
+      const series = run(events, range, usage);
+      const sdkWindows = series.windows.filter((w) => w.points.some((p) => p.at !== at(20 * HOUR)));
+      assert.deepEqual(sdkWindows.map((w) => w.points.map((p) => p.percent)), [[60], [130]], range);
+      assert.equal(sdkWindows[1]!.peak.percent, 130);
+      assert.equal(sdkWindows[1]!.over_limit, true);
+      assert.equal(series.percent_source, 'mixed');
+    }
+  });
+
+  it('only SDK points give percent_source sdk, also when the bar is calibrated', () => {
+    const events = [rejected(30 * HOUR, -25 * HOUR), five(10 * HOUR, 0.6, -6 * HOUR)];
+    const usage = [use(31 * HOUR, 1000)];
+    assert.equal(forecastBudget({ now, usage, events, window: 'five_hour' }).percent_source, 'calibrated');
+    assert.equal(run(events, 'day', usage).percent_source, 'sdk');
+  });
+
+  it('calibrated: a falling rolling token sum stays in its window; 5 h without a point start a new one', () => {
+    const plain = (ago: number) => rec(ago, { rateLimitType: 'seven_day', status: 'allowed' });
+    const events = [rec(8 * HOUR, { rateLimitType: 'five_hour', status: 'rejected' }), plain(3 * HOUR), plain(2 * HOUR), plain(1 * HOUR)];
+    const usage = [use(8.5 * HOUR, 1000), use(7.5 * HOUR, 500), use(3.5 * HOUR, 400)];
+    const series = run(events, 'day', usage);
+    assert.equal(series.percent_source, 'calibrated');
+    assert.deepEqual(series.windows.map((w) => w.points.map((p) => p.percent)), [[100], [90, 40, 40]]);
+    assert.equal(series.summary.windows, 2);
+  });
+
+  it('the forecast line reaches 100 % exactly at forecast.eta', () => {
+    const events = [five(17 * MIN, 0.7), five(0, 0.8333)];
+    const series = run(events, 'window');
+    const bar = forecastBudget({ now, usage: [], events, window: 'five_hour' });
+    const f = series.forecast!;
+    assert.equal(f.eta, bar.forecast!.eta);
+    const eta = Date.parse(f.eta!);
+    const a = Date.parse(f.from.at), b = Date.parse(f.to.at);
+    const atEta = f.from.percent + ((f.to.percent - f.from.percent) * (eta - a)) / (b - a);
+    assert.ok(Math.abs(atEta - 100) < 0.05, String(atEta));
+  });
+});

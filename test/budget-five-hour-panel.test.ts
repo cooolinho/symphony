@@ -278,3 +278,43 @@ describe('#605 tooltip and empty state', () => {
     assert.equal(chart(failed).querySelectorAll('.b5h-empty').length, 1);
   });
 });
+
+describe('#605 review round: running gate and peak label', () => {
+  const gated = (until: string) => {
+    const state = dashboardState();
+    (state.health as Record<string, unknown>).dispatch_gate = { reason: 'session_limit', window: 'five_hour', until, issue_identifier: 'acme/app#1' };
+    return state;
+  };
+
+  it('24 h: a gate without a running window is hatched from now, not over the gap, and the text counts it', async () => {
+    const state = gated('2026-10-30T13:30:00.000Z');
+    const page = await overview({ window: FORECAST, day: rangeSeries('day', false) }, { state });
+    page.click(chart(page).querySelectorAll('.ui-seg-btn')[1]!);
+    await until(() => chart(page).querySelectorAll('line.b5h-reset').length > 0, 3_000, 'day drawn');
+    const host = chart(page);
+    const rects = host.querySelectorAll('rect.b5h-pause');
+    assert.equal(rects.length, 1);
+    // the last window ended 6.5 h ago: the hatch starts at now (right edge of the 24 h plot), the gap stays empty
+    assert.ok(Number(rects[0]!.getAttribute('x')) >= 590, String(rects[0]!.getAttribute('x')));
+    assert.equal(text(host.querySelector('.b5h-text')!), '3 Fenster · 1× über Limit · 0 min pausiert');
+  });
+
+  it('24 h: a gate on the running window adds its minutes and overshoot to the text line', async () => {
+    const state = gated('2026-10-30T13:30:00.000Z');
+    const day = rangeSeries('day', false);
+    const running = win([{ at: t(NOW, -120), percent: 50 }, { at: t(NOW, -60), percent: 90 }], { resets_at: '2026-10-30T13:30:00.000Z', current: true });
+    const series = { ...day, windows: [...day.windows, running], summary: { windows: 4, over_limit: 0, paused_min: 0 } };
+    const page = await overview({ window: FORECAST, day: series }, { state });
+    page.click(chart(page).querySelectorAll('.ui-seg-btn')[1]!);
+    await until(() => chart(page).querySelectorAll('line.b5h-reset').length > 0, 3_000, 'day drawn');
+    const host = chart(page);
+    assert.equal(host.querySelectorAll('rect.b5h-pause').length, 1);
+    assert.equal(text(host.querySelector('.b5h-text')!), '4 Fenster · 1× über Limit · 60 min pausiert');
+  });
+
+  it('a peak just above 100 % is labelled with one decimal, not "+0 %"', async () => {
+    const series = windowSeries([win([...rising(90, 100), { at: t(FROM, 120), percent: 100.3 }])]);
+    const host = chart(await overview({ window: series }, { report: budget(null, 100.3) }));
+    assert.equal(text(host.querySelector('text.b5h-peak-lbl')!), '+0,3 %');
+  });
+});

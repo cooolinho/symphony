@@ -41,7 +41,8 @@ export interface FiveHourSeries {
   now: string;
   from: string;
   to: string;
-  percent_source: 'sdk' | 'calibrated' | 'none';
+  /** Source of the points: SDK utilisation, calibrated from tokens, both (`mixed`), or `none` without points. */
+  percent_source: 'sdk' | 'calibrated' | 'mixed' | 'none';
   windows: FiveHourWindow[];
   /** Straight line from now to the reset with the slope of the current window; only for `window`. */
   forecast: { from: { at: string; percent: number }; to: { at: string; percent: number }; eta: string | null; rate_pct_per_min: number } | null;
@@ -61,6 +62,8 @@ interface RawPoint {
   percent: number;
   rejected: boolean;
   resetsAt: number | null;
+  /** Where the percent comes from; `rejected` is a rejected event without own utilisation (100 %). */
+  source: 'sdk' | 'calibrated' | 'rejected';
 }
 
 function toWindow(points: RawPoint[], currentReset: number | null): FiveHourWindow {
@@ -82,12 +85,24 @@ function toWindow(points: RawPoint[], currentReset: number | null): FiveHourWind
   };
 }
 
+function seriesSource(points: RawPoint[], mode: 'sdk' | 'calibrated'): FiveHourSeries['percent_source'] {
+  if (points.length === 0) return 'none';
+  const sdk = points.some((point) => point.source === 'sdk');
+  const calibrated = points.some((point) => point.source === 'calibrated');
+  if (sdk && calibrated) return 'mixed';
+  if (sdk) return 'sdk';
+  if (calibrated) return 'calibrated';
+  return mode;
+}
+
 /**
  * The 5-hour utilisation over time for the budget chart. Pure: no I/O, no clock.
- * Points come from the rate-limit events (`windowUtilization(info, 'five_hour')`, in percent, values above 100 kept), or,
- * when `/api/v1/budget` reports a calibrated percentage, from the tokens of the 5 hours before each event / the calibrated limit.
- * A new window starts when the reset changes, a point reaches the window's reset, or the utilisation falls (except between two
- * points with the same known reset). The forecast is the one of `forecastBudget` with the same input, so its ETA is the bar's.
+ * The source is chosen per event: its SDK utilisation (`windowUtilization(info, 'five_hour')`, in percent, values above 100 kept)
+ * when it carries one; otherwise, with a calibrated limit, the tokens of the 5 hours before the event / that limit (rejected at
+ * least 100); otherwise a rejected event counts as 100 and any other event is skipped.
+ * A new window starts when the reset changes, a point reaches the window's reset, 5 hours pass without a point, or the SDK
+ * utilisation falls between two SDK points (except when both carry the same known reset). A falling calibrated value (a rolling
+ * token sum) alone starts no window. The forecast is the one of `forecastBudget` with the same input, so its ETA is the bar's.
  */
 export function fiveHourSeries(input: { now: Date; usage: BudgetUsage[]; events: RateLimitRecord[]; range: FiveHourRange }): FiveHourSeries {
   const { usage, events, range } = input;
@@ -118,15 +133,22 @@ export function fiveHourSeries(input: { now: Date; usage: BudgetUsage[]; events:
     const info = event.rate_limit_info;
     const rejected = isRejected(info) && rateLimitKey(info) === 'five_hour';
     const util = windowUtilization(info, 'five_hour');
-    let percent: number | null = null;
-    if (mode === 'sdk') {
-      if (util.utilization !== null) percent = round1(util.utilization * 100);
+    // the event's own utilisation, without the "rejected counts as 100 %" of windowUtilization
+    const own = rejected ? windowUtilization({ ...(info as object), status: 'allowed' }, 'five_hour').utilization : util.utilization;
+    let percent: number;
+    let source: RawPoint['source'];
+    if (own !== null) {
+      percent = round1(Math.max(own, rejected ? 1 : 0) * 100);
+      source = 'sdk';
     } else if (limit !== null && limit > 0) {
       percent = round1((sumTokens(usage, time - FIVE_HOURS, time) / limit) * 100);
       if (rejected) percent = Math.max(percent, 100);
-    }
-    if (percent === null) continue;
-    raw.push({ time, percent, rejected, resetsAt: util.resetsAt });
+      source = 'calibrated';
+    } else if (util.utilization !== null) {
+      percent = round1(util.utilization * 100);
+      source = 'rejected';
+    } else continue;
+    raw.push({ time, percent, rejected, resetsAt: util.resetsAt, source });
   }
 
   const groups: RawPoint[][] = [];
@@ -138,7 +160,14 @@ export function fiveHourSeries(input: { now: Date; usage: BudgetUsage[]; events:
       const prev = group[group.length - 1]!;
       if (point.resetsAt !== null && groupReset !== null && point.resetsAt !== groupReset) split = true;
       else if (groupReset !== null && point.time >= groupReset) split = true;
-      else if (point.percent < prev.percent && !(point.resetsAt !== null && point.resetsAt === prev.resetsAt)) split = true;
+      else if (point.time - prev.time >= FIVE_HOURS) split = true;
+      else if (
+        point.source === 'sdk' &&
+        prev.source === 'sdk' &&
+        point.percent < prev.percent &&
+        !(point.resetsAt !== null && point.resetsAt === prev.resetsAt)
+      )
+        split = true;
     }
     if (split) {
       group = [];
@@ -150,14 +179,18 @@ export function fiveHourSeries(input: { now: Date; usage: BudgetUsage[]; events:
   }
 
   // `window` shows only the running window: one whose reset has passed is over, even when no newer event exists yet
-  const windows = groups
-    .map((points) => toWindow(points, currentReset))
-    .filter((window) => range !== 'window' || window.resets_at === null || Date.parse(window.resets_at) > now);
+  const kept = groups
+    .map((points) => ({ points, window: toWindow(points, currentReset) }))
+    .filter(({ window }) => range !== 'window' || window.resets_at === null || Date.parse(window.resets_at) > now);
+  const windows = kept.map(({ window }) => window);
 
   let forecast: FiveHourSeries['forecast'] = null;
   if (range === 'window' && f.percent !== null && currentReset !== null) {
+    const etaMs = f.forecast?.eta == null ? NaN : Date.parse(f.forecast.eta);
     let slope: number | null = f.utilization_rate_per_min === null ? null : f.utilization_rate_per_min * 100;
     if (slope === null && mode === 'calibrated' && limit !== null && limit > 0) slope = (f.burn_rate_per_min / limit) * 100;
+    // with an ETA the line meets 100 % exactly there (the rounded rate of forecastBudget would miss the marker)
+    if (etaMs > now && f.percent < 100) slope = (100 - f.percent) / ((etaMs - now) / MINUTE_MS);
     if (slope !== null && slope > 0) {
       const minutes = (currentReset - now) / MINUTE_MS;
       forecast = {
@@ -181,7 +214,7 @@ export function fiveHourSeries(input: { now: Date; usage: BudgetUsage[]; events:
     now: iso(now),
     from: iso(from),
     to: iso(to),
-    percent_source: windows.length === 0 ? 'none' : mode,
+    percent_source: seriesSource(kept.flatMap(({ points }) => points), mode),
     windows,
     forecast,
     summary: { windows: windows.length, over_limit: windows.filter((window) => window.over_limit).length, paused_min: pausedMin },

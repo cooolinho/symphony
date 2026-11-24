@@ -65,19 +65,29 @@ export const BUDGET_CHART_JS = `
     const ms = (iso) => Date.parse(iso || '');
     const fin = (n) => typeof n === 'number' && Number.isFinite(n);
 
-    /** The window the running pause belongs to: the current one, else the last. */
+    /** The window still running at series.now: the current one, else the last one before its reset (null when none runs). */
     function activeWindow() {
       const list = series ? series.windows : [];
-      return list.find((w) => w.current) || list[list.length - 1] || null;
+      const now = ms(series && series.now);
+      const current = list.find((w) => w.current);
+      if (current) return current;
+      const last = list[list.length - 1];
+      if (!last || !fin(now)) return null;
+      if (last.resets_at) return ms(last.resets_at) > now ? last : null;
+      const end = last.points[last.points.length - 1];
+      return end && now - ms(end.at) < 5 * B5H_HOUR ? last : null;
     }
-    /** Pause of a window, or the running gate pause for the active window without own pause. */
-    function pauseOf(w) {
-      if (w.pause) return w.pause;
-      if (gate && w === activeWindow()) {
-        const last = w.points[w.points.length - 1];
-        return { from: w.over_limit_at || (last && last.at), to: gate };
-      }
-      return null;
+    /**
+     * The running dispatch gate as a pause, unless the running window already has its own: from the window's overrun
+     * (else its last point) or, without a running window, from now until the gate ends. Gaps without use stay empty.
+     */
+    function gatePause() {
+      if (!gate || !series) return null;
+      const w = activeWindow();
+      if (w && w.pause) return null;
+      const last = w ? w.points[w.points.length - 1] : null;
+      const from = w ? w.over_limit_at || (last && last.at) : series.now;
+      return from ? { from, to: gate, window: w } : null;
     }
 
     function legend(range, hasForecast) {
@@ -103,18 +113,23 @@ export const BUDGET_CHART_JS = `
       if (range !== 'window') {
         const s = series.summary || { windows: 0, over_limit: 0, paused_min: 0 };
         add(s.windows + ' Fenster · ');
-        if (s.over_limit > 0) {
-          add(s.over_limit + '× über Limit', 'b5h-red');
-          add(' · ' + s.paused_min + ' min pausiert');
+        // the running gate pause is drawn, so it counts here too
+        const gp = gatePause();
+        const now = ms(series.now);
+        const over = s.over_limit + (gp && !(gp.window && gp.window.over_limit) ? 1 : 0);
+        const paused = s.paused_min + (gp && fin(now) ? Math.max(0, Math.round((now - ms(gp.from)) / 60000)) : 0);
+        if (over > 0) {
+          add(over + '× über Limit', 'b5h-red');
+          add(' · ' + paused + ' min pausiert');
         } else add('nie über Limit');
         return p;
       }
       add('Fenster ' + budgetHm(series.from) + '–' + budgetHm(series.to) + ' · ');
       const w = activeWindow();
-      const pause = w ? pauseOf(w) : null;
+      const pause = (w && w.pause) || gatePause();
       const eta = budget && budget.five_hour && budget.five_hour.forecast ? budget.five_hour.forecast.eta : null;
-      if (w && (w.over_limit || pause)) {
-        add(w.over_limit
+      if ((w && w.over_limit) || pause) {
+        add(w && w.over_limit
           ? 'Limit überschritten um ' + budgetHm(w.over_limit_at) + ' (Spitze ' + Math.round(w.peak.percent) + ' %)'
           : 'Limit erreicht', 'b5h-red');
         if (pause) add(' · pausiert bis ' + budgetHm(pause.to));
@@ -194,12 +209,13 @@ export const BUDGET_CHART_JS = `
         svg.append(label);
       }
 
-      // pauses (hatched)
-      for (const w of windows) {
-        const p = pauseOf(w);
-        if (!p) continue;
+      // pauses (hatched): each window's own, plus the running gate
+      const pauses = windows.map((w) => w.pause).filter(Boolean);
+      const gp = gatePause();
+      if (gp) pauses.push(gp);
+      for (const p of pauses) {
         const a = ms(p.from), b = ms(p.to);
-        if (!fin(a) || !fin(b) || b <= from || a >= to) continue;
+        if (!fin(a) || !fin(b) || b <= from || a > to) continue;
         svg.append(svgEl('rect', { x: clampX(a), y: pad.t, width: Math.max(1, clampX(b) - clampX(a)), height: y0 - pad.t, class: 'b5h-pause', fill: 'url(#b5h-hatch)' }));
       }
 
@@ -223,7 +239,8 @@ export const BUDGET_CHART_JS = `
           svg.append(svgEl('circle', { cx: px, cy: py, r: range === 'week' ? 2.5 : 3, class: 'b5h-peak' }));
           if (range !== 'week' && w.peak.percent > 100) {
             const lbl = svgEl('text', { x: px, y: py - 6, 'text-anchor': 'middle', class: 'b5h-peak-lbl' });
-            lbl.textContent = '+' + Math.round(w.peak.percent - 100) + ' %';
+            const over = w.peak.percent - 100;
+            lbl.textContent = '+' + String(over < 1 ? Math.round(over * 10) / 10 : Math.round(over)).replace('.', ',') + ' %';
             svg.append(lbl);
           }
         }
@@ -244,7 +261,7 @@ export const BUDGET_CHART_JS = `
         }
         // no ETA marker once the window is over the limit or paused: the text line already says so
         const aw = activeWindow();
-        const reached = !!(aw && (aw.over_limit || pauseOf(aw)));
+        const reached = !!((aw && (aw.over_limit || aw.pause)) || gatePause());
         const eta = budget && budget.five_hour && budget.five_hour.forecast ? ms(budget.five_hour.forecast.eta) : NaN;
         if (!reached && fin(eta) && eta >= from && eta <= to) {
           svg.append(svgEl('circle', { cx: x(eta), cy: y100, r: 3.5, class: 'b5h-eta' }));
