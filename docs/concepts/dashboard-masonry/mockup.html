@@ -1,0 +1,485 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Symphony · Übersicht im Masonry-Raster (Mockup A)</title>
+<!--
+  Mockup A "Masonry-Raster", abgenommen am 2026-11-24. Gehört zu konzept.md im selben Ordner.
+  Eigenständig, ohne Build. Farben und Glas-Styles stammen aus src/http/ui/palette.ts, tokens.ts und layout.ts.
+  Nur Demo-Daten (acme/*), keine echten Repositories, Kosten oder Hostnamen.
+  URL-Parameter: ?state=live|idle|calm (Startzustand), ?clean=1 (Mockup-Leiste ausblenden, für Vorschaubilder).
+-->
+<style>
+  :root {
+    --bg: #070b16; --panel-2: #152036; --raise: #1a2640;
+    --line: rgba(148, 163, 184, .14); --line-2: rgba(148, 163, 184, .24);
+    --fg: #e8eef9; --fg-strong: #f4f7fc; --fg-2: #aab6cc; --fg-3: #8b98b0; --fg-chip: #c9d4e6; --fg-label: #9aa8c0; --fg-faint: #7c879b;
+    --link: #7dd3fc; --link-hover: #bae6fd;
+    --green: #34d399; --green-300: #6ee7b7; --cyan: #7dd3fc; --amber: #fbbf24; --amber-300: #fcd34d; --red: #f87171; --red-300: #fca5a5;
+    --violet: #c4b5fd; --gray: #94a3b8;
+    --role-analyst: #38bdf8; --role-architect: #a78bfa; --role-developer: #34d399; --role-tester: #fbbf24; --role-docs: #cbd5e1;
+    --role-reviewer: #f472b6; --role-security: #fb923c; --role-symphony: #94a3b8;
+    --op-read: #7dd3fc; --op-write: #fbbf24; --op-search: #c4b5fd;
+    --sans: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+    /* Raster: Rand zum Bildschirm, Abstand zwischen Karten, Zeileneinheit des Masonry-Rasters, Mindestbreite einer Spalte. */
+    --edge: 16px; --gap: 16px; --unit: 4px; --col-min: 380px;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; background: var(--bg); }
+  body { min-height: 100vh; color: var(--fg); font: 14px/1.5 var(--sans); -webkit-font-smoothing: antialiased; overflow-x: hidden; }
+  a { color: var(--link); text-decoration: none; }
+  a:hover { color: var(--link-hover); text-decoration: underline; text-underline-offset: 3px; }
+  .num, .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .lbl { font: 500 11px/1.3 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--fg-label); margin: 0; }
+  .muted { color: var(--fg-3); font-size: 12px; }
+
+  /* Aurora wie AURORA.overview in layout.ts */
+  .aurora { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; }
+  .aurora i { position: absolute; display: block; border-radius: 50%; filter: blur(90px); }
+  .aurora::after { content: ""; position: absolute; inset: 0; background-image: radial-gradient(rgba(255, 255, 255, .08) 1px, transparent 1.5px); background-size: 22px 22px; }
+
+  .g { background: rgba(255, 255, 255, .055); border: 1px solid rgba(255, 255, 255, .1); border-radius: 20px;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08), 0 24px 48px -24px rgba(0, 0, 0, .7);
+    -webkit-backdrop-filter: blur(24px) saturate(150%); backdrop-filter: blur(24px) saturate(150%); }
+  .gi { background: rgba(255, 255, 255, .035); border: 1px solid rgba(255, 255, 255, .07); border-radius: 14px; }
+
+  /* Mockup-Leiste (nicht Teil des Dashboards) */
+  .mock { position: relative; z-index: 2; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 8px var(--edge);
+    background: #1e1035; border-bottom: 1px solid rgba(196, 181, 253, .3); font: 12px var(--mono); color: var(--violet); }
+  .mock b { color: #ede9fe; font-weight: 600; }
+  .mock button { font: 12px var(--mono); color: var(--fg); background: rgba(255, 255, 255, .06); border: 1px solid rgba(255, 255, 255, .14);
+    border-radius: 999px; padding: 4px 12px; cursor: pointer; }
+  .mock button[aria-pressed="true"] { background: #ede9fe; color: #1e1035; border-color: #ede9fe; }
+  .mock .sp { margin-left: auto; }
+
+  /* Shell: volle Breite, nur --edge Rand */
+  .wrap { position: relative; z-index: 1; padding: 12px var(--edge) 40px; display: flex; flex-direction: column; gap: 14px; }
+  .head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding: 8px 10px 8px 14px; border-radius: 22px; }
+  .brand { display: inline-flex; align-items: center; gap: 10px; color: var(--fg-strong); font: 600 17px var(--sans); }
+  .brand-mark { width: 36px; height: 36px; border-radius: 12px; display: grid; place-items: center; color: #fff; background: linear-gradient(140deg, #14b8a6, #7c3aed); }
+  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font: 12px var(--mono); white-space: nowrap;
+    border: 1px solid rgba(255, 255, 255, .12); background: rgba(255, 255, 255, .05); color: var(--fg-chip); }
+  .chip .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .chip.green { color: var(--green-300); border-color: rgba(52, 211, 153, .4); background: rgba(52, 211, 153, .1); }
+  .chip.amber { color: var(--amber-300); border-color: rgba(251, 191, 36, .4); background: rgba(251, 191, 36, .1); }
+  .chip.repo { color: var(--fg-2); }
+  .nav { flex: 1 1 520px; display: flex; justify-content: center; min-width: 0; }
+  .well { display: flex; gap: 4px; padding: 4px; border-radius: 999px; background: rgba(0, 0, 0, .28); border: 1px solid rgba(255, 255, 255, .08); overflow-x: auto; max-width: 100%; scrollbar-width: none; }
+  .nv { display: inline-flex; align-items: center; min-height: 40px; padding: 0 16px; border-radius: 999px; color: var(--fg-2); font: 500 14px var(--sans); white-space: nowrap; }
+  .nv.on { background: rgba(255, 255, 255, .92); color: #0b1220; font-weight: 600; }
+  .meta { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+  .clock { font: 15px var(--mono); padding: 0 6px; }
+
+  /* Seitenkopf: Titel links, Statuszeile rechts. Repositories und Dispatch-Gate sind Chips, keine eigenen Balken mehr. */
+  .title { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; padding: 2px 4px; }
+  .title h1 { margin: 0; font-size: 28px; font-weight: 600; letter-spacing: -.02em; line-height: 1.15; }
+  .title .sub { margin: 2px 0 0; color: var(--fg-2); font-size: 14px; }
+  .status { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: flex-end; }
+  .status .sep { width: 1px; height: 18px; background: rgba(255, 255, 255, .14); margin: 0 4px; }
+
+  /* Masonry-Raster: gleich breite Spalten, jede Karte belegt so viele Zeileneinheiten wie sie hoch ist (JS unten). */
+  .masonry { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(var(--col-min), 100%), 1fr));
+    grid-auto-rows: var(--unit); grid-auto-flow: row dense; column-gap: var(--gap); row-gap: 0; align-items: start; }
+  .card { align-self: start; margin-bottom: var(--gap); min-width: 0; padding: 16px; }
+  /* Breite Karten belegen ab drei Spalten zwei Spalten (Teams live, Agent-Aktivität). */
+  @media (min-width: 1220px) { .card.wide { grid-column: span 2; } }
+  .card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; min-height: 22px; }
+  .card-head .count { color: var(--fg-faint); }
+  .card-head a { font-size: 12.5px; }
+  .empty { display: flex; align-items: center; gap: 10px; color: var(--fg-2); font-size: 13px; }
+  .empty .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); flex: none; }
+
+  /* Teams live: eine Zeile je laufendem Issue (wie .team-row in overview-teams.ts), plus Modell und Phase */
+  .teams { display: flex; flex-direction: column; gap: 8px; }
+  .team { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 12px 14px; color: inherit; }
+  .team:hover { background: rgba(255, 255, 255, .06); text-decoration: none; }
+  .team-head { flex: 1 1 240px; min-width: 0; display: grid; gap: 2px; }
+  .team-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .team-num { font: 13px var(--mono); color: var(--fg-label); flex: none; }
+  .team-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; font-weight: 600; color: var(--fg); }
+  .team-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--fg-3); }
+  .team-run { font: 12px var(--mono); color: var(--violet); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .avs { display: flex; gap: 5px; }
+  .av { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font: 600 9.5px var(--mono); color: var(--fg-faint);
+    border: 1px dashed rgba(255, 255, 255, .2); }
+  .av.done { border-style: solid; color: var(--c); border-color: color-mix(in srgb, var(--c) 55%, transparent); background: color-mix(in srgb, var(--c) 16%, transparent); }
+  .av.play { border: 2px solid var(--c); color: #fff; background: color-mix(in srgb, var(--c) 32%, transparent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 20%, transparent); }
+  .cast { flex: 1 1 230px; min-width: 0; display: grid; gap: 5px; }
+  .act { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .eq { display: inline-flex; align-items: flex-end; gap: 2px; height: 12px; }
+  .eq i { width: 3px; background: var(--c); border-radius: 1px; animation: eq 1s ease-in-out infinite; }
+  .eq i:nth-child(2) { animation-delay: -.3s; } .eq i:nth-child(3) { animation-delay: -.6s; } .eq i:nth-child(4) { animation-delay: -.15s; }
+  @keyframes eq { 0%, 100% { height: 4px; } 50% { height: 12px; } }
+  .role { font-size: 13px; font-weight: 500; flex: none; }
+  .action { font: 12.5px var(--mono); color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .ctx { display: grid; grid-template-columns: 52px 1fr 38px; align-items: center; gap: 8px; font-size: 12px; color: var(--fg-3); }
+  .ctx .pct { font: 12px var(--mono); text-align: right; color: var(--fg); }
+  .bar { height: 5px; border-radius: 3px; background: rgba(255, 255, 255, .08); overflow: hidden; }
+  .bar > i { display: block; height: 100%; border-radius: 3px; background: var(--c, var(--green)); }
+  .team-end { margin-left: auto; min-width: 84px; text-align: right; display: grid; gap: 1px; }
+  .team-time { font: 15px var(--mono); }
+  .team-subs { font-size: 12px; color: var(--fg-3); }
+
+  /* Alerts */
+  .alerts { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+  .alert { padding: 10px 12px; border-radius: 12px; border: 1px solid rgba(251, 191, 36, .35); background: rgba(251, 191, 36, .06); }
+  .alert .k { font: 600 10.5px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--amber); display: flex; justify-content: space-between; }
+  .alert .k span:last-child { color: var(--fg-3); letter-spacing: 0; text-transform: none; font-weight: 400; }
+  .alert b { display: block; font-size: 14px; font-weight: 600; margin: 2px 0 1px; }
+  .alert p { margin: 0; font-size: 12.5px; color: var(--fg-2); }
+  .badge-n { min-width: 22px; height: 22px; border-radius: 999px; display: grid; place-items: center; font: 600 11px var(--mono); color: #fecaca; background: rgba(248, 113, 113, .2); }
+
+  /* Context-Budget */
+  .bud { display: grid; gap: 4px; margin-bottom: 10px; }
+  .bud-top { display: flex; justify-content: space-between; align-items: baseline; }
+  .bud-top b { font-size: 14px; font-weight: 600; }
+  .bud-top .num { font-size: 18px; font-weight: 600; }
+  .bar.lg { height: 8px; }
+  .hatch { background: repeating-linear-gradient(135deg, rgba(251, 191, 36, .35) 0 4px, transparent 4px 8px); }
+  details.graph { border-radius: 12px; padding: 0; margin: 8px 0 12px; }
+  details.graph summary { cursor: pointer; list-style: none; padding: 8px 12px; display: flex; justify-content: space-between; align-items: center; }
+  details.graph summary::-webkit-details-marker { display: none; }
+  details.graph summary::after { content: "▾"; color: var(--fg-3); }
+  details.graph:not([open]) summary::after { content: "▸"; }
+  details.graph svg { display: block; width: 100%; height: auto; padding: 0 10px 10px; }
+
+  /* System: sechs kompakte Kacheln */
+  .sys { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .sy { padding: 9px 10px; min-width: 0; }
+  .sy .t { display: flex; justify-content: space-between; font-size: 12px; color: var(--fg-2); }
+  .sy .t .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); align-self: center; }
+  .sy .t .dot.amber { background: var(--amber); }
+  .sy .v { font: 600 19px var(--mono); margin: 2px 0 4px; white-space: nowrap; }
+  .sy .v small { font-size: 11px; color: var(--fg-3); font-weight: 400; }
+  .sy .bar { height: 3px; }
+
+  /* Kennzahlen: früher sieben breite Kacheln, jetzt ein kompaktes 4er-Raster */
+  .kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+  .kp { padding: 8px 10px; min-width: 0; border-left: 2px solid var(--c, var(--fg-faint)); border-radius: 0 10px 10px 0; background: rgba(255, 255, 255, .035); }
+  .kp .l { font: 600 10px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--fg-label); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .kp .v { font: 600 18px var(--mono); white-space: nowrap; }
+  .kp .v small { font-size: 12px; color: var(--fg-3); font-weight: 400; }
+
+  /* Agent-Aktivität: Strip der letzten 30 min */
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 11.5px; color: var(--fg-2); }
+  .legend span::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--c); margin-right: 5px; }
+  .strip { display: flex; align-items: flex-end; gap: 2px; height: 34px; margin: 10px 0 4px; }
+  .strip i { flex: 1 1 0; min-width: 2px; border-radius: 1px; background: var(--c); }
+  .axis { display: flex; justify-content: space-between; font: 11px var(--mono); color: var(--fg-faint); }
+
+  /* Brain */
+  .vit { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .vit .gi { padding: 9px 12px; }
+  .vit .v { font: 600 20px var(--mono); }
+  .vit .l { font-size: 12px; color: var(--fg-2); }
+  .btn { display: inline-flex; align-items: center; padding: 5px 12px; border-radius: 999px; font: 600 12px var(--sans); color: #ede9fe;
+    background: rgba(167, 139, 250, .18); border: 1px solid rgba(167, 139, 250, .45); }
+  .acc { list-style: none; margin: 0; padding: 0; display: grid; }
+  .acc li { display: grid; grid-template-columns: 62px 104px 54px minmax(0, 1fr); gap: 8px; align-items: baseline; padding: 5px 2px;
+    border-top: 1px solid rgba(255, 255, 255, .06); font-size: 12.5px; }
+  .acc li:first-child { border-top: 0; }
+  .acc .t { font: 12px var(--mono); color: var(--fg-faint); }
+  .acc .who { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--c); }
+  .acc .op { font: 600 10.5px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--c); }
+  .acc .note { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--fg); }
+
+  /* Agent activity (Feed), feste Höhe */
+  .feed { list-style: none; margin: 0; padding: 0; font: 12px/1.7 var(--mono); max-height: 228px; overflow-y: auto; }
+  .feed li { display: grid; grid-template-columns: 64px 92px minmax(0, 1fr); gap: 8px; color: var(--fg-3); }
+  .feed li .w { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--fg-2); }
+  .feed li .x { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--fg-2); }
+  .feed li.ok .x { color: var(--green); } .feed li.warn .x { color: var(--amber); }
+
+  @media (max-width: 640px) {
+    :root { --edge: 12px; --gap: 12px; }
+    .head { gap: 6px 10px; }
+    .nav { order: 3; flex-basis: 100%; }
+    .version { display: none; }
+    .title h1 { font-size: 24px; }
+    .status { justify-content: flex-start; }
+    .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .sys { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .acc li { grid-template-columns: 56px minmax(0, 1fr); }
+    .acc .op { display: none; }
+    .acc .note { grid-column: 1 / -1; padding-left: 64px; margin-top: -4px; }
+  }
+  @media (prefers-reduced-motion: reduce) { .eq i { animation: none; height: 8px; } }
+</style>
+</head>
+<body>
+<div class="aurora" aria-hidden="true">
+  <i style="width:620px;height:620px;left:-160px;top:-200px;background:#0d9488;opacity:.32"></i>
+  <i style="width:560px;height:560px;right:-120px;top:-120px;background:#6d28d9;opacity:.3"></i>
+  <i style="width:520px;height:520px;left:30%;top:640px;background:#1d4ed8;opacity:.22"></i>
+  <i style="width:480px;height:480px;right:6%;top:1180px;background:#be185d;opacity:.18"></i>
+</div>
+
+<div class="mock" id="mock">
+  <b>Mockup A · Masonry-Raster</b>
+  <span>Zustand:</span>
+  <button type="button" data-state="live" aria-pressed="true">2 Teams laufen</button>
+  <button type="button" data-state="idle" aria-pressed="false">Idle</button>
+  <button type="button" data-state="calm" aria-pressed="false">Alerts leer</button>
+  <span class="sp" id="mock-info">–</span>
+</div>
+
+<div class="wrap">
+  <header class="g head">
+    <span class="brand"><span class="brand-mark" aria-hidden="true">≋</span>Symphony</span>
+    <span class="chip green"><span class="dot"></span>LIVE</span>
+    <nav class="nav" aria-label="Seiten"><div class="well">
+      <a class="nv on" href="#" aria-current="page">Übersicht</a><a class="nv" href="#">Changes</a><a class="nv" href="#">Tasks</a><a class="nv" href="#">Brain</a><a class="nv" href="#">Statistik</a>
+    </div></nav>
+    <div class="meta">
+      <span class="chip amber">5h 55 %</span><span class="chip">Board ↗</span><span class="chip version">v1.9.0</span>
+      <span class="clock num" id="clock">19:10:20</span>
+    </div>
+  </header>
+
+  <div class="title">
+    <div>
+      <h1>Übersicht</h1>
+      <p class="sub" id="subtitle">2 Teams spielen · 1 wartet auf einen Slot · letzter Poll vor 2 s</p>
+    </div>
+    <div class="status" role="group" aria-label="Status">
+      <span class="chip green"><span class="dot"></span>Tracker ok</span>
+      <span class="chip green"><span class="dot"></span>Workflow gültig</span>
+      <span class="chip green"><span class="dot"></span>Watchdog läuft</span>
+      <span class="chip amber" title="Session-Limit seven_day, ausgelöst von acme/api#41"><span class="dot"></span>Dispatch pausiert bis 25.11. 10:01</span>
+      <span class="sep" aria-hidden="true"></span>
+      <span class="chip repo">acme/app</span><span class="chip repo">acme/api</span><span class="chip repo">acme/web</span>
+      <a class="chip" href="#">Logs</a>
+    </div>
+  </div>
+
+  <main class="masonry" id="masonry">
+
+    <section class="g card wide" aria-labelledby="t-teams">
+      <div class="card-head"><h2 class="lbl" id="t-teams">Teams live <span class="count" id="teams-count">02</span></h2><a href="#">Alle Tasks →</a></div>
+      <div class="teams" id="teams-live">
+        <a class="gi team" href="#">
+          <div class="team-head">
+            <div class="team-line"><span class="team-num">#382</span><span class="team-title">Titel des Issues 382</span></div>
+            <div class="team-meta">acme/app · In progress · Runde 1</div>
+            <div class="team-run">opus · StreamingTurn</div>
+          </div>
+          <div class="avs">
+            <span class="av done" style="--c:var(--role-analyst)">AN</span><span class="av done" style="--c:var(--role-architect)">AR</span>
+            <span class="av play" style="--c:var(--role-developer)">DE</span><span class="av">TE</span><span class="av">RE</span><span class="av">DO</span><span class="av">SE</span>
+          </div>
+          <div class="cast">
+            <div class="act"><span class="eq" style="--c:var(--role-developer)"><i></i><i></i><i></i><i></i></span><span class="role">Developer</span><span class="action">Edit · src/http/ui/tokens.ts</span></div>
+            <div class="ctx"><span>Context</span><div class="bar" style="--c:var(--amber)"><i style="width:71%"></i></div><span class="pct">71 %</span></div>
+          </div>
+          <div class="team-end"><span class="team-time" data-tick="1530">25:30</span><span class="team-subs">2 Subagents</span></div>
+        </a>
+        <a class="gi team" href="#">
+          <div class="team-head">
+            <div class="team-line"><span class="team-num">#380</span><span class="team-title">Titel des Issues 380</span></div>
+            <div class="team-meta">acme/api · In progress · Runde 2</div>
+            <div class="team-run">sonnet · RunningChecks</div>
+          </div>
+          <div class="avs">
+            <span class="av done" style="--c:var(--role-analyst)">AN</span><span class="av done" style="--c:var(--role-architect)">AR</span>
+            <span class="av done" style="--c:var(--role-developer)">DE</span><span class="av play" style="--c:var(--role-tester)">TE</span><span class="av">RE</span><span class="av">DO</span><span class="av">SE</span>
+          </div>
+          <div class="cast">
+            <div class="act"><span class="eq" style="--c:var(--role-tester)"><i></i><i></i><i></i><i></i></span><span class="role">Tester</span><span class="action">Bash · npm test -- budget</span></div>
+            <div class="ctx"><span>Context</span><div class="bar" style="--c:var(--cyan)"><i style="width:42%"></i></div><span class="pct">42 %</span></div>
+          </div>
+          <div class="team-end"><span class="team-time" data-tick="642">10:42</span><span class="team-subs">keine Subagents</span></div>
+        </a>
+      </div>
+      <p class="empty" id="teams-empty" hidden><span class="dot" style="background:var(--gray)"></span>Kein Team spielt gerade · 0 Slots belegt · 0 in der Queue</p>
+    </section>
+
+    <section class="g card" aria-labelledby="t-alerts">
+      <div class="card-head"><h2 class="lbl" id="t-alerts">Alerts</h2><span class="badge-n" id="alerts-n">2</span></div>
+      <ul class="alerts" id="alerts-list">
+        <li class="alert"><div class="k"><span>Limit-Prognose</span><span>gerade eben</span></div><b>5-h-Limit in Sicht</b><p>5-h-Fenster bei 55 % · Limit ca. 19:40 · Reset 23:10</p></li>
+        <li class="alert"><div class="k"><span>Limit-Prognose</span><span>gerade eben</span></div><b>7-Tage-Limit in Sicht</b><p>7-Tage-Fenster bei 100 % · Reset 10:00</p></li>
+      </ul>
+      <p class="empty" id="alerts-empty" hidden><span class="dot"></span>Alles ruhig</p>
+    </section>
+
+    <section class="g card" aria-labelledby="t-budget">
+      <div class="card-head"><h2 class="lbl" id="t-budget">Context-Budget · heute</h2><a href="#">Verlauf →</a></div>
+      <div class="bud">
+        <div class="bud-top"><b>5-h-Fenster</b><span class="num" style="color:var(--amber)">55 %</span></div>
+        <div class="bar lg"><i style="width:55%;background:var(--amber)"></i></div>
+        <span class="muted">Burn 5.4M Tokens/h · Limit ca. 19:40 · Reset 23:10</span>
+      </div>
+      <details class="gi graph" open>
+        <summary><span class="lbl">Auslastung 5-h-Fenster</span></summary>
+        <svg viewBox="0 0 360 120" role="img" aria-label="Verlauf der Auslastung im 5-h-Fenster mit Prognose">
+          <g stroke="rgba(255,255,255,.07)"><line x1="24" y1="20" x2="356" y2="20"/><line x1="24" y1="50" x2="356" y2="50"/><line x1="24" y1="80" x2="356" y2="80"/><line x1="24" y1="104" x2="356" y2="104"/></g>
+          <line x1="24" y1="30" x2="356" y2="30" stroke="#f87171" stroke-dasharray="4 4" opacity=".7"/>
+          <text x="26" y="26" fill="#f87171" font-size="9" font-family="monospace">5-h-Limit</text>
+          <path d="M24 104 L40 96 L56 88 L70 80 L84 70 L96 60 L96 104 Z" fill="rgba(251,191,36,.18)"/>
+          <polyline points="24,104 40,96 56,88 70,80 84,70 96,60" fill="none" stroke="#fbbf24" stroke-width="2"/>
+          <polyline points="96,60 120,46 140,34 152,26 170,14" fill="none" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="4 3"/>
+          <line x1="96" y1="12" x2="96" y2="104" stroke="rgba(255,255,255,.3)" stroke-dasharray="2 3"/>
+          <circle cx="146" cy="30" r="3" fill="#f87171"/>
+          <g fill="#7c879b" font-size="9" font-family="monospace"><text x="24" y="116">18:10</text><text x="110" y="116">19:40</text><text x="200" y="116">21:00</text><text x="320" y="116">23:10</text></g>
+        </svg>
+      </details>
+      <div class="bud">
+        <div class="bud-top"><b>Woche</b><span class="num" style="color:var(--red)">100 %</span></div>
+        <div class="bar lg"><i style="width:100%;background:var(--red)"></i></div>
+        <span class="muted">Limit erreicht · pausiert bis 10:01</span>
+      </div>
+    </section>
+
+    <section class="g card" aria-labelledby="t-system">
+      <div class="card-head"><h2 class="lbl" id="t-system">System</h2><span class="muted">build-01 · seit 2 d 4 h</span></div>
+      <div class="sys">
+        <div class="gi sy"><div class="t">CPU<span class="dot"></span></div><div class="v">36 <small>%</small></div><div class="bar" style="--c:#38bdf8"><i style="width:36%"></i></div></div>
+        <div class="gi sy"><div class="t">RAM<span class="dot"></span></div><div class="v">11.2 <small>/ 31 GB</small></div><div class="bar" style="--c:#a78bfa"><i style="width:36%"></i></div></div>
+        <div class="gi sy"><div class="t">Disk<span class="dot amber"></span></div><div class="v">402 <small>/ 465 GB</small></div><div class="bar" style="--c:#fbbf24"><i style="width:86%"></i></div></div>
+        <div class="gi sy"><div class="t">Load<span class="dot"></span></div><div class="v">2.31 <small>1 min</small></div><div class="bar" style="--c:#fbbf24"><i style="width:29%"></i></div></div>
+        <div class="gi sy"><div class="t">Slots<span class="dot"></span></div><div class="v" id="sys-slots">2 <small>/ 4</small></div><div class="bar" style="--c:#34d399"><i id="sys-slots-bar" style="width:50%"></i></div></div>
+        <div class="gi sy"><div class="t">GitHub API<span class="dot"></span></div><div class="v">4.120 <small>/ 5.000</small></div><div class="bar" style="--c:#cbd5e1"><i style="width:82%"></i></div></div>
+      </div>
+    </section>
+
+    <section class="g card" aria-labelledby="t-kpi">
+      <div class="card-head"><h2 class="lbl" id="t-kpi">Kennzahlen · seit Start</h2></div>
+      <div class="kpis">
+        <div class="kp" style="--c:var(--green)"><div class="l">Running</div><div class="v" id="kpi-run" style="color:var(--green)">02 <small>/ 04</small></div></div>
+        <div class="kp" style="--c:var(--cyan)"><div class="l">Up next</div><div class="v">00</div></div>
+        <div class="kp" style="--c:var(--amber)"><div class="l">Waiting</div><div class="v">01</div></div>
+        <div class="kp" style="--c:var(--gray)"><div class="l">Blocked</div><div class="v">00</div></div>
+        <div class="kp" style="--c:var(--cyan)"><div class="l">Tokens</div><div class="v">1.2M</div></div>
+        <div class="kp" style="--c:var(--cyan)"><div class="l">Est. cost</div><div class="v">$3.20</div></div>
+        <div class="kp" style="--c:var(--cyan)"><div class="l">Agent-Zeit</div><div class="v">36m</div></div>
+        <div class="kp" style="--c:var(--violet)"><div class="l">Runden</div><div class="v">03</div></div>
+      </div>
+    </section>
+
+    <section class="g card wide" aria-labelledby="t-act">
+      <div class="card-head"><h2 class="lbl" id="t-act">Agent-Aktivität · letzte 30 min</h2></div>
+      <div class="legend">
+        <span style="--c:var(--role-analyst)">Analyst</span><span style="--c:var(--role-architect)">Architect</span><span style="--c:var(--role-developer)">Developer</span>
+        <span style="--c:var(--role-tester)">Tester</span><span style="--c:var(--role-reviewer)">Reviewer</span><span style="--c:var(--role-docs)">Docs</span>
+      </div>
+      <div class="strip" id="strip" role="img" aria-label="Tool-Aufrufe der letzten 30 Minuten, farbig je Rolle"></div>
+      <div class="axis" aria-hidden="true"><span>−30 min</span><span>−20 min</span><span>−10 min</span><span>jetzt</span></div>
+    </section>
+
+    <section class="g card" aria-labelledby="t-vit">
+      <div class="card-head"><h2 class="lbl" id="t-vit">Brain-Vitals</h2><a class="btn" href="#">In Obsidian öffnen ↗</a></div>
+      <div class="vit">
+        <div class="gi"><div class="v">515</div><div class="l">Notizen</div></div>
+        <div class="gi"><div class="v" style="color:var(--amber)">10</div><div class="l">Kandidaten warten</div></div>
+        <div class="gi"><div class="v" style="color:var(--cyan)">1.007</div><div class="l">Links</div></div>
+        <div class="gi"><div class="v" style="color:var(--violet)">384</div><div class="l">Waisen ohne Links</div></div>
+      </div>
+      <p class="muted" style="margin:10px 0 0">5 Writes heute · 20 Reads · letzter Commit vor 9 h</p>
+    </section>
+
+    <section class="g card" aria-labelledby="t-acc">
+      <div class="card-head"><h2 class="lbl" id="t-acc">Brain-Zugriffe <span class="count">8 von 50</span></h2><a href="#">Alle auf der Brain-Seite →</a></div>
+      <ul class="acc">
+        <li><span class="t">09:22</span><span class="who" style="--c:var(--role-reviewer)">Reviewer #382</span><span class="op" style="--c:var(--op-search)">search</span><span class="note">„series-source-from-current-state“</span></li>
+        <li><span class="t">08:40</span><span class="who" style="--c:var(--role-developer)">Developer #382</span><span class="op" style="--c:var(--op-search)">search</span><span class="note">„five-hour series calibrated“</span></li>
+        <li><span class="t">08:29</span><span class="who" style="--c:var(--role-reviewer)">Reviewer #380</span><span class="op" style="--c:var(--op-read)">read</span><span class="note">Repos/acme-app/index.md</span></li>
+        <li><span class="t">06:56</span><span class="who" style="--c:var(--role-developer)">Developer #382</span><span class="op" style="--c:var(--op-read)">read</span><span class="note">Lessons/dashboard-ui-fallen.md</span></li>
+        <li><span class="t">06:56</span><span class="who" style="--c:var(--role-developer)">Developer #380</span><span class="op" style="--c:var(--op-write)">write</span><span class="note">Inbox/unterpfad-api-route-testfallen.md</span></li>
+        <li><span class="t">06:53</span><span class="who" style="--c:var(--role-architect)">Architect #380</span><span class="op" style="--c:var(--op-read)">read</span><span class="note">Inbox/unterpfad-api-route-testfallen.md</span></li>
+        <li><span class="t">06:41</span><span class="who" style="--c:var(--role-analyst)">Analyst #380</span><span class="op" style="--c:var(--op-search)">search</span><span class="note">„budget chart five hour“</span></li>
+        <li><span class="t">06:12</span><span class="who" style="--c:var(--role-symphony)">Symphony</span><span class="op" style="--c:var(--op-write)">write</span><span class="note">Repos/acme-app/index.md</span></li>
+      </ul>
+    </section>
+
+    <section class="g card" aria-labelledby="t-feed">
+      <div class="card-head"><h2 class="lbl" id="t-feed">Agent activity</h2><span class="muted">live · neueste zuerst</span></div>
+      <ol class="feed" id="feed">
+        <li><span>19:10:12</span><span class="w">#382 DE</span><span class="x">tool Edit src/http/ui/tokens.ts</span></li>
+        <li class="warn"><span>19:09:58</span><span class="w">#380 TE</span><span class="x">check npm test lief 41 s</span></li>
+        <li><span>19:09:40</span><span class="w">#382 DE</span><span class="x">tool Read src/http/ui/layout.ts</span></li>
+        <li class="ok"><span>19:08:03</span><span class="w">#380 DE</span><span class="x">stage done → Tester</span></li>
+        <li><span>19:07:51</span><span class="w">#382 DE</span><span class="x">subagent explorer gestartet</span></li>
+        <li><span>19:06:30</span><span class="w">#380 DE</span><span class="x">tool Bash git commit</span></li>
+        <li><span>19:05:02</span><span class="w">acme/web</span><span class="x">wartet auf Slot</span></li>
+        <li><span>19:02:44</span><span class="w">#382 AR</span><span class="x">report_result approved</span></li>
+      </ol>
+    </section>
+
+  </main>
+</div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const params = new URLSearchParams(location.search);
+  if (params.get('clean') === '1') $('mock').hidden = true;
+
+  // Masonry: jede Karte belegt ceil((Höhe + Abstand) / Einheit) Zeilen. Neu gerechnet wird nur, wenn sich eine
+  // Höhe ändert (ResizeObserver); die Reihenfolge im DOM bleibt, Karten wandern nur bei Höhenänderung.
+  const grid = $('masonry');
+  const css = getComputedStyle(document.documentElement);
+  const px = (name) => parseFloat(css.getPropertyValue(name)) || 0;
+  function layout(card) {
+    const unit = px('--unit'), gap = parseFloat(getComputedStyle(grid).columnGap) || px('--gap');
+    const h = card.getBoundingClientRect().height;
+    const span = Math.max(1, Math.ceil((h + gap) / unit));
+    if (card.style.gridRowEnd !== 'span ' + span) card.style.gridRowEnd = 'span ' + span;
+  }
+  const ro = new ResizeObserver((entries) => { for (const e of entries) layout(e.target); info(); });
+  for (const card of grid.children) ro.observe(card);
+
+  function info() {
+    const cols = getComputedStyle(grid).gridTemplateColumns.split(' ').length;
+    $('mock-info').textContent = innerWidth + ' px · ' + cols + ' Spalte' + (cols === 1 ? '' : 'n');
+  }
+  addEventListener('resize', info);
+
+  // Agent-Aktivität: 90 Balken à 20 s, farbig je Rolle
+  const roles = ['--role-developer', '--role-tester', '--role-architect', '--role-analyst', '--role-reviewer'];
+  const strip = $('strip');
+  let seed = 7;
+  const rnd = () => (seed = (seed * 9301 + 49297) % 233280) / 233280;
+  for (let i = 0; i < 90; i++) {
+    const b = document.createElement('i');
+    const on = rnd() > (i < 30 ? .55 : .25);
+    b.style.height = on ? (20 + Math.round(rnd() * 80)) + '%' : '0';
+    b.style.setProperty('--c', 'var(' + roles[i > 60 ? (rnd() > .5 ? 0 : 1) : Math.floor(rnd() * roles.length)] + ')');
+    strip.append(b);
+  }
+
+  // Zustände
+  function setState(s) {
+    for (const b of document.querySelectorAll('[data-state]')) b.setAttribute('aria-pressed', String(b.dataset.state === s));
+    const idle = s === 'idle';
+    $('teams-live').hidden = idle; $('teams-empty').hidden = !idle;
+    $('teams-count').textContent = idle ? '00' : '02';
+    $('kpi-run').innerHTML = (idle ? '00' : '02') + ' <small>/ 04</small>';
+    $('sys-slots').innerHTML = (idle ? '0' : '2') + ' <small>/ 4</small>';
+    $('sys-slots-bar').style.width = idle ? '0' : '50%';
+    $('subtitle').textContent = idle ? '0 Teams spielen · 0 warten auf einen Slot · letzter Poll vor 2 s'
+      : '2 Teams spielen · 1 wartet auf einen Slot · letzter Poll vor 2 s';
+    const calm = s === 'calm';
+    $('alerts-list').hidden = calm; $('alerts-empty').hidden = !calm; $('alerts-n').hidden = calm;
+  }
+  for (const b of document.querySelectorAll('[data-state]')) b.addEventListener('click', () => setState(b.dataset.state));
+  setState(['live', 'idle', 'calm'].includes(params.get('state')) ? params.get('state') : 'live');
+
+  // Uhr und Laufzeiten ticken wie beim Poll; die Karten bleiben dabei stehen.
+  const pad = (n) => String(n).padStart(2, '0');
+  setInterval(() => {
+    const d = new Date(); $('clock').textContent = pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+    for (const t of document.querySelectorAll('[data-tick]')) {
+      const s = Number(t.dataset.tick) + 1; t.dataset.tick = s; t.textContent = pad(Math.floor(s / 60)) + ':' + pad(s % 60);
+    }
+  }, 1000);
+  info();
+  // Für die Aufnahme der Vorschaubilder: Seitenhöhe nach dem Layout (chromium --dump-dom liest sie).
+  setTimeout(() => document.body.dataset.height = String(Math.ceil(document.documentElement.scrollHeight)), 500);
+})();
+</script>
+</body>
+</html>
