@@ -1116,8 +1116,6 @@ Every issue in the plan carries a reason (`reason.code` and a text; times in the
 ## Dashboard and API
 
 The dashboard only runs if `SYMPHONY_PORT` is set or you call `npm start -- --port 4000`. It listens on the address
-
-The header of every page shows the chip **Board ↗**. It opens the GitHub project board Symphony polls in a new tab (`target="_blank"`, `rel="noopener noreferrer"`; title *<Boardname> auf GitHub öffnen*). The server fills it in on every page request from the board URL of the project (`url` of the project metadata). Without a known `https://` URL (not loaded yet, a fetch error, a tracker without a URL) the chip is missing and the page is otherwise unchanged.
 from `SYMPHONY_HOST`, by default only on `127.0.0.1`. The header shows system status, workflow version, poll interval
 and last poll. Below it, *Repositories* lists the repositories from `tracker.provider.repositories`
 (`GITHUB_REPOSITORY` in the shipped `WORKFLOW.md`) as links to GitHub; without the setting it shows *all repositories
@@ -1129,6 +1127,8 @@ when `system.gpu` is enabled. Each card shows the value, a bar and a sparkline o
 reload every 10 seconds on their own; a value that is unknown, or a failed request, shows "—" without a bar. The
 sparklines of slots and GitHub API are kept by the page and start when it is opened. Below, the issues in an active
 column appear in separate sections, each with a count; empty sections are hidden:
+
+The header of every page shows the chip **Board ↗**. It opens the GitHub project board Symphony polls in a new tab (`target="_blank"`, `rel="noopener noreferrer"`; title *<Boardname> auf GitHub öffnen*). The server fills it in on every page request from the board URL of the project (`url` of the project metadata). Without a known `https://` URL (not loaded yet, a fetch error, a tracker without a URL) the chip is missing and the page is otherwise unchanged.
 
 The overview opens with a title block: the heading *Übersicht*, a subtitle (*n Teams spielen · m warten auf einen Slot · letzter Poll vor s s*, *noch kein Poll* without a poll; it turns amber when the poll is overdue) and status chips *Tracker ok* / *Tracker Fehler*, *Workflow gültig* / *Workflow ungültig* and, only with open write clashes, *n Write-Clashes* (amber), next to **Logs** and **Jetzt pollen**.
 
