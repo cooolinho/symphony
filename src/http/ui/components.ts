@@ -469,8 +469,8 @@ export const COMPONENTS_CSS = `
   .ui-fchip[aria-pressed="true"] { background: ${rgba(s300, .16)}; border-color: ${rgba(s300, .55)}; color: var(--sky-100); }
   .ui-fchip-count { font-size: 12px; opacity: .75; }
 
-  .ui-seg { display: inline-flex; gap: 4px; padding: 4px; border-radius: 999px; background: rgba(0, 0, 0, .28); border: 1px solid rgba(255, 255, 255, .08); }
-  .ui-seg-btn { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 18px; border-radius: 999px; border: 0;
+  .ui-seg { display: inline-flex; gap: 4px; padding: 4px; border-radius: 999px; background: rgba(0, 0, 0, .28); border: 1px solid rgba(255, 255, 255, .08); max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+  .ui-seg-btn { display: inline-flex; flex: none; align-items: center; gap: 8px; min-height: 44px; padding: 0 18px; border-radius: 999px; border: 0;
     background: transparent; color: var(--fg-2); font: 500 14px var(--sans); letter-spacing: 0; text-transform: none; }
   .ui-seg-btn:hover { background: rgba(255, 255, 255, .06); color: var(--fg); }
   .ui-seg-btn[aria-pressed="true"] { background: rgba(255, 255, 255, .92); color: var(--ink-text); }

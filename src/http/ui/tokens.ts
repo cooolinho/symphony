@@ -30,6 +30,7 @@ export const TOKENS_CSS = `
   :root {
     /* Side margin of the shell (full width, no max-width); 12px at <= 640px. */
     --edge: 16px;
+    --read-width: 120ch; /* Lesebreite für Fließtext innerhalb von Karten; Karten und Seite bleiben voll breit */
     --bg: #070b16; --bg-2: #0a1020; --panel: #111a2c; --panel-2: #152036; --raise: #1a2640;
     --line: rgba(148, 163, 184, .14); --line-2: rgba(148, 163, 184, .24);
     /* Text, links (mockup values). Legacy names below map onto them. */
