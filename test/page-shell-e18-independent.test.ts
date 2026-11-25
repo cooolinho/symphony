@@ -264,14 +264,15 @@ describe('E1-8 independent: Wurzel, Aurora, Container', () => {
     assert.equal(norm(grid.decls.get('pointer-events') ?? s.cs(s.all.find((n) => n.attrs['aria-hidden'] === 'true' && /blur/.test(n.children[0]?.attrs.style ?? '')) as Node).get('pointer-events')), 'none');
   });
 
-  it('Container: max-width 1440, zentriert, Padding, Spalte, Gap 18', () => {
+  it('Container: volle Breite, Rand --edge, Spalte, Gap 18', () => {
     const s = shell();
     const header = s.all.find((n) => n.tag === 'header') as Node;
-    const wrap = ancestors(header).find((a) => norm(s.cs(a).get('max-width')) === '1440px') as Node;
-    assert.ok(wrap, 'Container mit max-width 1440px');
+    const wrap = ancestors(header).find((a) => /(^|\s)shell-wrap(\s|$)/.test(a.attrs.class ?? '')) as Node;
+    assert.ok(wrap, 'Container .shell-wrap');
     const c = s.cs(wrap);
-    assert.equal(norm(c.get('margin')), '0 auto');
-    assert.equal(norm(c.get('padding')), '16px 20px 48px');
+    assert.ok(['', 'none'].includes(norm(c.get('max-width')) ?? ''), 'keine max-width');
+    assert.notEqual(norm(c.get('margin')), '0 auto');
+    assert.equal(norm(c.get('padding')), '16px var(--edge) 48px');
     assert.equal(norm(c.get('display')), 'flex');
     assert.equal(norm(c.get('flex-direction')), 'column');
     assert.equal(norm(c.get('gap')), '18px');

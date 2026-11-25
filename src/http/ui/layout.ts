@@ -126,7 +126,7 @@ export const LAYOUT_CSS = `
   .aurora::after { content: ""; position: absolute; inset: 0; background-image: radial-gradient(rgba(255, 255, 255, .08) 1px, transparent 1.5px);
     background-size: 22px 22px; }
 
-  .shell-wrap { position: relative; z-index: 1; max-width: 1440px; margin: 0 auto; padding: 16px 20px 48px;
+  .shell-wrap { position: relative; z-index: 1; padding: 16px var(--edge) 48px;
     display: flex; flex-direction: column; gap: 18px; }
   .shell-main { max-width: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 18px; min-width: 0; }
 
@@ -193,7 +193,6 @@ export const LAYOUT_CSS = `
   .sr-only, .sr { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); border: 0; }
 
   @media (max-width: 640px) {
-    .shell-wrap { padding-left: 12px; padding-right: 12px; }
     .shell-head { gap: 6px 10px; }
     .shell-nav { order: 3; flex-basis: 100%; }
     .shell-version { display: none; }
