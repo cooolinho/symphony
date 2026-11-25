@@ -163,7 +163,7 @@ describe('search field', () => {
 });
 
 describe('without Brain', () => {
-  const hiddenAll = (page: Awaited<ReturnType<typeof open>>) => ['brain-panel', 'brain-access'].every((id) => page.$(id).hidden || page.$('brain-row').hidden);
+  const hiddenAll = (page: Awaited<ReturnType<typeof open>>) => ['brain-panel', 'brain-access'].every((id) => page.$(id).hidden);
   const noError = (page: Awaited<ReturnType<typeof open>>) => {
     assert.ok(hiddenAll(page));
     assert.equal(page.$('brain-access-list').children.length, 0);
@@ -190,7 +190,7 @@ describe('without Brain', () => {
 
   it('shows no error/alert for the missing Brain and the rest of the overview still renders', async () => {
     const page = await open((u) => (u.startsWith('/api/v1/brain/') ? { __status: 404, error: { code: 'brain_disabled' } } : dashboardState()));
-    assert.ok(!/brain_disabled|Fehler/i.test(page.$('brain-row').textContent));
+    assert.ok(!/brain_disabled|Fehler/i.test(page.$('brain-panel').textContent + page.$('brain-access').textContent));
     assert.ok(page.$('alerts-list') !== null);
   });
 

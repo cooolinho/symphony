@@ -7,7 +7,7 @@
 // ResizeObserver exists. Without it (no JS, no observer, no spans) the rows are auto-high and the container is a plain,
 // readable grid.
 //
-// Not wired into any page yet (E3-1). All top-level names of the script start with `masonry` / `MASONRY_` so they
+// Used by the overview (E3-1). All top-level names of the script start with `masonry` / `MASONRY_` so they
 // cannot clash with the page script. No transitions: cards change position without animation.
 
 export const MASONRY_UNIT_PX = 4;
