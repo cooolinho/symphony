@@ -110,7 +110,7 @@ const AGENT_PAGE_CSS = `
   /* Alert (failure, retry, pause) */
   .alert { border-color: var(--tone-line); background: linear-gradient(180deg, var(--tone-dim), rgba(11, 17, 21, .85)); display: grid; gap: 8px; }
   .alert h2 { color: var(--tone); margin: 0; display: flex; align-items: center; gap: 8px; font-size: 12px; }
-  .alert .reason { font: 13px/1.55 var(--mono); color: var(--text); overflow-wrap: anywhere; white-space: pre-wrap; max-height: 9.5em; overflow: auto; }
+  .alert .reason { font: 13px/1.55 var(--mono); color: var(--text); overflow-wrap: anywhere; white-space: pre-wrap; max-height: 9.5em; overflow: auto; max-width: var(--read-width); }
   .alert .sub { font: 12px var(--mono); color: var(--text-2); display: flex; flex-wrap: wrap; gap: 4px 16px; }
   .alert .sub b { color: var(--text); font-weight: 600; }
   .alert .actions { margin-top: 2px; }
@@ -172,7 +172,7 @@ const AGENT_PAGE_CSS = `
   .kind-tool .kind { color: var(--trace-tool); } .kind-brain .kind { color: var(--trace-brain); } .kind-subagent .kind { color: var(--trace-subagent); }
   .kind-model .kind { color: var(--trace-model); } .kind-result .kind { color: var(--trace-result); } .kind-phase .kind { color: var(--gray); }
   .item .text { font-family: var(--mono); color: #dbe3f0; overflow-wrap: anywhere; }
-  .item .card { min-width: 0; }
+  .item .card { min-width: 0; max-width: var(--read-width); }
   .item.err { background: linear-gradient(90deg, var(--red-dim), transparent 70%); }
   .item.warn .text { color: #fcd34d; }
   .item.fresh { animation: item-in 1.6s var(--ease); }
@@ -221,7 +221,7 @@ const AGENT_PAGE_CSS = `
   .logs .sev { font-weight: 600; letter-spacing: .08em; color: var(--tone); }
   .logs .who { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .logs .ev { color: var(--cyan); overflow-wrap: anywhere; }
-  .logs .d { color: var(--text); overflow-wrap: anywhere; }
+  .logs .d { color: var(--text); overflow-wrap: anywhere; max-width: var(--read-width); }
   .logs .note { display: block; padding: 14px; color: var(--muted); }
 
   @media (max-width: 640px) {

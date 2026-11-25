@@ -22,9 +22,9 @@ const CHANGES_CSS = `
   .chg-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 12.5px; color: var(--fg-2); }
   .chg-role { display: inline-flex; align-items: center; gap: 6px; }
   .chg-kind { font-size: 11px; }
-  .chg-title { margin: 0; font: 600 15.5px var(--sans); color: var(--fg-strong, var(--fg)); overflow-wrap: anywhere; }
-  .chg-meta { margin: 0; font-size: 12px; color: var(--fg-3); overflow-wrap: anywhere; }
-  .chg-files { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+  .chg-title { margin: 0; font: 600 15.5px var(--sans); color: var(--fg-strong, var(--fg)); overflow-wrap: anywhere; max-width: var(--read-width); }
+  .chg-meta { margin: 0; font-size: 12px; color: var(--fg-3); overflow-wrap: anywhere; max-width: var(--read-width); }
+  .chg-files { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-width: var(--read-width); }
   .chg-file { display: grid; grid-template-columns: minmax(0, 1fr) 120px 84px; gap: 10px; align-items: center; font-size: 12.5px; }
   .chg-file-more { font-size: 12.5px; color: var(--fg-3); }
   .chg-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -34,7 +34,7 @@ const CHANGES_CSS = `
   .chg-bar { display: flex; height: 6px; border-radius: 99px; background: rgba(255, 255, 255, .06); overflow: hidden; }
   .chg-bar-add { background: #6ee7b7; }
   .chg-bar-del { background: #fca5a5; }
-  .chg-diff { margin: 0; padding: 10px 12px; border-radius: 10px; background: rgba(0, 0, 0, .3); font-size: 12.5px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .chg-diff { margin: 0; padding: 10px 12px; border-radius: 10px; background: rgba(0, 0, 0, .3); font-size: 12.5px; white-space: pre-wrap; overflow-wrap: anywhere; max-width: var(--read-width); }
   .chg-diff .chg-dl { display: block; }
   .chg-dl-add { color: #6ee7b7; }
   .chg-dl-del { color: #fca5a5; }
