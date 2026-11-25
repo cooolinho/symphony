@@ -109,7 +109,8 @@ describe('E1-8 page shell after the mockup', () => {
 
   it('container', () => {
     const wrap = ruleOf(LAYOUT_CSS, '.shell-wrap');
-    for (const d of ['max-width: 1440px', 'margin: 0 auto', 'padding: 16px 20px 48px', 'display: flex', 'flex-direction: column', 'gap: 18px']) assert.ok(wrap.includes(d), d);
+    for (const d of ['padding: 16px var(--edge) 48px', 'display: flex', 'flex-direction: column', 'gap: 18px']) assert.ok(wrap.includes(d), d);
+    assert.ok(!/max-width/.test(wrap) && !/margin: 0 auto/.test(wrap));
     const html = shell({ crumbs: [{ label: 'A', href: '/' }, { label: 'B' }] });
     assert.ok(html.indexOf('<div class="shell-wrap">') < html.indexOf('<header'));
     assert.ok(html.indexOf('<header') < html.indexOf('class="crumbs"') && html.indexOf('class="crumbs"') < html.indexOf('<main'));
