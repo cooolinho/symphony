@@ -150,6 +150,17 @@ the issue is added to the board and its status is set to `sub_issue_status`. The
   Numbers that are no issue (a typo, a pull request) come back in `unknown_blockers`; a failing mutation becomes a
   `warnings` entry. The relationship is additional to a "Blocked by #N" line in the body, which Symphony reads too
   (see [Dependencies](#dependencies)); both count as one dependency.
+- **`milestone`** (a title such as `1.5.0`) puts the issue into an open milestone of the repository. The open milestone
+  with that title is looked up first (`repository.milestones`, open and closed, titles compared without case); a
+  **closed** milestone with that title fails the call with `invalid_argument` before anything is created, since closed
+  milestones are never reopened. If no milestone exists it is created (REST `POST /repos/{repo}/milestones`); when that
+  answers 422 `already_exists` (created meanwhile by someone else) the lookup runs again. The milestone is set after the
+  issue exists, with its own `updateIssue` mutation, so a failure never loses the issue: it becomes a `warnings` entry
+  and the call still succeeds. An existing sub-issue (`created: false`) without a milestone gets it; one with another
+  milestone keeps it and gets a warning. The result then carries `milestone: {title, number, url, created}`
+  (`null` if the milestone could not be resolved); `created` is true only in the call that created the milestone. A
+  call without `milestone` sends none of these requests and returns no `milestone` field. Creating a milestone needs
+  the token scope of the repository (classic `repo`, fine-grained *Issues: write*).
 - `labels` must already exist in the repository. Unknown ones are skipped and reported in `unknown_labels`; labels are
   never created.
 - Once the issue exists, failures of the board steps (no access to the project, the column is missing on the board)
@@ -158,7 +169,7 @@ the issue is added to the board and its status is set to `sub_issue_status`. The
 - A project workflow such as "Item added to project" can set its own status after the tool did; configure it to match
   `sub_issue_status` or turn it off.
 - Errors: `not_allowed` (the role has no `max_sub_issues`), `limit_reached`, `invalid_argument` (`parent` is no open
-  sub-issue of the session's issue), `github_error` (GitHub rejected the mutation, e.g. missing permission), `not_found`.
+  sub-issue of the session's issue, or `milestone` names a closed milestone), `github_error` (GitHub rejected the mutation, e.g. missing permission), `not_found`.
 
 Failures come back to the agent as structured tool errors (`{error: {category, message}}`), so it can correct its
 input. Keep GitHub's secondary rate limits in mind: content-creating calls such as comments are limited to roughly
