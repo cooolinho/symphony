@@ -506,7 +506,7 @@ Symphony ships these commands:
 | `/refactoring [scope]` | Audit of a Laravel/Filament repository: context, baseline, bugs and refactoring candidates. The result is sub-issues. |
 | `/refactor-safely` | Restructure without changing behavior, with tests as a safety net. Is the first line of every refactoring sub-issue. |
 | `/auto-code [description] [wave=3] [checkpoint=5] [issue-models=auto]` | [Autopilot](#autopilot-auto-code): develops the repository continuously from its project description, in waves of sub-issues that are implemented right away. |
-| `/concept <path> [issue-models=auto]` | [Concept to Backlog](#concept-to-backlog-concept): breaks down a concept (Markdown file) into epics and sub-issues with dependencies, as well as model and effort labels. Everything ends up in the backlog. |
+| `/concept <path> [issue-models=auto] [milestone=auto]` | [Concept to Backlog](#concept-to-backlog-concept): breaks down a concept (Markdown file) into epics and sub-issues with dependencies, as well as model and effort labels. Everything ends up in the backlog. |
 | `/plan [<path>] [issue-models=auto]` | [List to Backlog](#list-to-backlog-plan): turns every item of a list (a file in the repository, or the issue description itself) into one sub-issue with a detailed implementation plan, dependencies and category, effort and model labels. Everything ends up in the backlog. |
 | `/brain-garden` | Tidies the knowledge vault: duplicates, orphans and broken links become candidate notes. |
 | `/release [vX.Y.Z]` | [Release per issue](#release-per-issue-release): once its *Blocked by* issues or epics are done, turns everything merged since the last tag into a version: bump, merge into the default branch, tag and GitHub release, fully automatic. |
@@ -686,6 +686,16 @@ only start when you move them to **Ready**. The instructions are in the skill
 [`concept`](../.claude/skills/concept/SKILL.md), the breakdown rules in
 [breakdown.md](../.claude/skills/concept/breakdown.md).
 
+**Milestone.** Epics and issues of one run go into one GitHub milestone, which is created if it does not exist
+(`milestone=<auto|off|<title>>`, default `auto`; the concept issue itself gets none). `auto` takes the highest of the
+latest SemVer tag on the base branch (`vX.Y.Z` or `X.Y.Z`) and the open SemVer milestones and uses the next minor
+version: tag `v1.4.0` and open milestone `1.5.0` give `1.6.0`, so two concepts one after the other land in `1.5.0`,
+then `1.6.0`. Without any SemVer tag or milestone there is no milestone, and the report says so. `off` sets none;
+`milestone=1.5.0` names one (text like "Release 1.5.0" in the brief counts the same). A closed milestone is never
+reopened. The plan names the milestone: a continuation after an abort reuses it, an addendum uses it too unless it is
+closed by now, then a new one is chosen like `auto`. The agent tools are `create_sub_issue` with `milestone` and the
+read-only `list_milestones` ([GitHub adapter](adapters/github-project.md)).
+
 ### Setup
 
 1. **Concept:** a Markdown file on the base branch (`SYMPHONY_BASE_BRANCH`, otherwise the default branch), because
@@ -696,7 +706,8 @@ only start when you move them to **Ready**. The instructions are in the skill
 3. **Issue:** description `/concept docs/index.md`, optionally `issue-models=auto|fable|opus|sonnet|haiku|off` (default
    `off`: no model labels, the model follows the issue's complexity, see
    [Model and effort per role](#model-and-effort-per-role)), optionally `issue-efforts=auto|off` (default `off`: no
-   effort labels) and below it text with focus areas or exclusions. Then move it to **Ready**.
+   effort labels), optionally `milestone=auto|off|<title>` (default `auto`, see below) and below it text with focus
+   areas or exclusions. Then move it to **Ready**.
 
 Check with `npm run dry-run`: the issue shows up with `role=analyst` and `↳ command /concept → symphony:concept`.
 

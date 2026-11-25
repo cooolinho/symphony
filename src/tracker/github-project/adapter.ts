@@ -66,6 +66,7 @@ import {
 import { KIND, type GithubProjectSettings } from './settings.ts';
 import { actionsJobOf, withJobLogs } from './job-logs.ts';
 import { publishRelease, releaseReport, type ReleaseRequest, type ReleaseResult } from './release.ts';
+import { createMilestone, type MilestoneRef } from './milestones.ts';
 import { postCommitStatus } from './statuses.ts';
 import { createGithubTools } from './tools.ts';
 
@@ -560,6 +561,11 @@ export class GithubProjectAdapter implements TrackerAdapter {
       warnings.push(`could not move the release issue to "${settings.doneState}": ${errorMessage(error)}`);
     }
     return { ...result, issue_status: status, ...(warnings.length > 0 ? { warnings } : {}) };
+  }
+
+  /** Creates a milestone (REST; GraphQL has no mutation for it). 'exists' when GitHub answers 422 already_exists. */
+  async createMilestone(repository: string, title: string): Promise<MilestoneRef | 'exists'> {
+    return createMilestone({ fetch: (...args) => this.#fetch(...args), endpoint: this.settings.endpoint, token: this.settings.token, timeoutMs: this.settings.requestTimeoutMs }, repository, title);
   }
 
   async reportCheckStatus(issue: Issue, status: CheckStatus): Promise<void> {
