@@ -32,7 +32,7 @@ const BRAIN_CSS = `
   .br-type.ui-chip { font-size: 11px; }
   .br-title { margin: 0; font: 600 15px/1.35 var(--sans); color: var(--fg-strong); overflow-wrap: anywhere; }
   .br-target { font: 500 12px var(--mono); color: var(--fg-3); overflow-wrap: anywhere; }
-  .br-excerpt { margin: 0; font-size: 13px; line-height: 1.5; color: var(--fg-chip); overflow-wrap: anywhere; }
+  .br-excerpt { margin: 0; font-size: 13px; line-height: 1.5; color: var(--fg-chip); overflow-wrap: anywhere; max-width: var(--read-width); }
   .br-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   .br-msg { margin: 0; font-size: 12px; color: var(--red); }
   .br-msg:empty { display: none; }

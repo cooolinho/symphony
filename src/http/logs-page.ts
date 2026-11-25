@@ -41,7 +41,7 @@ const LOGS_CSS = `
   .bh-days { display: grid; gap: 14px; margin-top: 6px; }
   .bh-day { font: 12px var(--mono); text-align: center; color: var(--fg-2); min-height: 1em; white-space: nowrap; }
   .bh-source { font-size: 12.5px; color: var(--fg-2); margin: 0 0 8px; }
-  .bh-text { font-size: 13px; color: var(--fg-2); margin: 12px 0 0; }
+  .bh-text { font-size: 13px; color: var(--fg-2); margin: 12px 0 0; max-width: var(--read-width); }
   .rs-scroll { overflow-x: auto; }
   #role-summary { font-size: 13px; width: 100%; }
   #role-summary th { font-size: 13px; color: var(--fg-3); font-weight: 500; }
@@ -92,7 +92,8 @@ const LOGS_CSS = `
   .issue-cell .meta { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row-actions { display: flex; gap: 6px; }
   .more { margin-top: 10px; }
-  .note { color: var(--fg-3); font-size: 12px; margin: 10px 0 0; }
+  .note { color: var(--fg-3); font-size: 12px; margin: 10px 0 0; max-width: var(--read-width); }
+  #footer { max-width: var(--read-width); }
   @media (max-width: 640px) {
     .field select { min-width: 0; width: 100%; }
     .filters > .field { flex: 1 1 140px; }

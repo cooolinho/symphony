@@ -4,6 +4,7 @@ import { errorMessage } from '../../util/errors.ts';
 import { TrackerError, type AgentToolContext, type AgentToolSpec, type Issue, type ToolResult } from '../types.ts';
 import type { GithubProjectAdapter } from './adapter.ts';
 import { assertNoGraphqlErrors } from './client.ts';
+import { findMilestones, type MilestoneRef } from './milestones.ts';
 import { issueRefOf, titleKey, type IssueRef } from './normalize.ts';
 import {
   ADD_BLOCKED_BY_MUTATION,
@@ -13,6 +14,7 @@ import {
   ISSUE_BY_NUMBER_QUERY,
   ISSUE_CONTEXT_QUERY,
   REPOSITORY_QUERY,
+  SET_ISSUE_MILESTONE_MUTATION,
   SET_STATUS_MUTATION,
   SUB_ISSUE_CONTEXT_QUERY,
   UPDATE_PULL_REQUEST_MUTATION,
@@ -376,6 +378,7 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
       'relationship; also write "Blocked by #<number>" in the body. Create the blocking issues first. ' +
       'If an open sub-issue with the same title already exists under the same parent it is returned instead of creating ' +
       'a duplicate (its missing blockers are still set). ' +
+      'Pass milestone (a title such as "1.5.0") to put the issue into that open milestone; it is created if missing, a closed one is rejected (invalid_argument), and an existing issue keeps a different milestone (warning). ' +
       'Labels must already exist in the repository; unknown ones are reported in unknown_labels and skipped.',
     inputSchema: {
       title: z.string().min(1).max(256).describe('Issue title'),
@@ -383,6 +386,7 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
       labels: z.array(z.string().min(1)).max(10).optional().describe('Names of existing repository labels, e.g. ["bug"]'),
       parent: z.number().int().positive().optional().describe('Number of an open sub-issue of this session\'s issue to create the new issue under'),
       blocked_by: z.array(z.number().int().positive()).max(20).optional().describe('Numbers of issues in the same repository the new issue waits for'),
+      milestone: z.string().min(1).max(255).optional().describe('Title of an open milestone of the repository, e.g. "1.5.0"; created if missing, a closed one is rejected'),
     },
     mutates: true,
     createsSubIssues: true,
@@ -432,6 +436,54 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
                 'the sub-issue has no status and is not worked on until a human sets one',
             );
           }
+
+          // Milestone: looked up before anything is created (a closed one fails the call), created lazily, set separately.
+          const milestoneTitle = typeof args.milestone === 'string' ? args.milestone.trim() : null;
+          if (milestoneTitle === '') return fail('invalid_argument', 'milestone is empty');
+          const retry = 'the issue has no milestone, call create_sub_issue again with the same title to retry';
+          let milestone: MilestoneRef | null = null;
+          let milestoneCreated = false;
+          let lookupFailed = false;
+          const matching = (list: MilestoneRef[]): MilestoneRef[] => list.filter((m) => titleKey(m.title) === titleKey(String(milestoneTitle)));
+          if (milestoneTitle !== null) {
+            try {
+              const found = matching(await findMilestones(client, ref.repository, { states: ['OPEN', 'CLOSED'], query: milestoneTitle }));
+              milestone = found.find((m) => m.state === 'OPEN') ?? null;
+              if (milestone === null && found.length > 0) {
+                return fail('invalid_argument', `milestone "${milestoneTitle}" is closed in ${ref.repository}; closed milestones are not reopened: pass another milestone or none`);
+              }
+            } catch (error) {
+              lookupFailed = true;
+              warnings.push(`could not look up milestone "${milestoneTitle}": ${errorMessage(error)}; ${retry}`);
+            }
+          }
+          /** The open milestone; creates it when missing (a 422 means someone else did: look again). Failures are warnings. */
+          const ensureMilestone = async (): Promise<MilestoneRef | null> => {
+            if (milestoneTitle === null || milestone !== null || lookupFailed) return milestone;
+            try {
+              const made = await adapter.createMilestone(ref.repository, milestoneTitle);
+              if (made !== 'exists') {
+                milestone = made;
+                milestoneCreated = true;
+                return milestone;
+              }
+              milestone = matching(await findMilestones(client, ref.repository, { states: ['OPEN', 'CLOSED'], query: milestoneTitle })).find((m) => m.state === 'OPEN') ?? null;
+              if (milestone === null) warnings.push(`milestone "${milestoneTitle}" exists but is not open; ${retry}`);
+            } catch (error) {
+              lookupFailed = true;
+              warnings.push(`could not create milestone "${milestoneTitle}": ${errorMessage(error)}; ${retry}`);
+            }
+            return milestone;
+          };
+          const setMilestone = async (issueId: string, number: unknown): Promise<void> => {
+            if (milestone === null) return;
+            try {
+              const set = await client.request<Json>(SET_ISSUE_MILESTONE_MUTATION, { issueId, milestoneId: milestone.id });
+              assertNoGraphqlErrors(set.errors);
+            } catch (error) {
+              warnings.push(`could not set milestone "${milestoneTitle}" on #${String(number)}: ${errorMessage(error)}; ${retry}`);
+            }
+          };
 
           /** Puts the issue on the board (once) and sets its column; failures after the issue exists are warnings. */
           const placeOnBoard = async (issueId: string, items: Json[]): Promise<boolean> => {
@@ -497,6 +549,9 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
           /** What `parent` and `blocked_by` add to the result; nothing for a call without them. */
           const relations = async (issue: Json): Promise<Json> => {
             const extra: Json = {};
+            if (milestoneTitle !== null) {
+              extra.milestone = milestone === null ? null : { title: milestone.title, number: milestone.number, url: milestone.url, created: milestoneCreated };
+            }
             if (parentNumber !== null) extra.parent = parentNumber;
             if (requested.length > 0) {
               const { linked, unknown } = await linkBlockers(issue);
@@ -521,6 +576,16 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
 
           const existing = open.find((sub) => titleKey(sub.title) === titleKey(title));
           if (existing !== undefined) {
+            const current = obj(existing.milestone);
+            if (milestoneTitle !== null) {
+              if (current === null) {
+                if (await ensureMilestone()) await setMilestone(String(existing.id), existing.number);
+              } else if (titleKey(String(current.title)) !== titleKey(milestoneTitle)) {
+                warnings.push(`#${String(existing.number)} keeps its milestone "${String(current.title)}" (requested "${milestoneTitle}")`);
+              } else if (milestone === null && typeof current.id === 'string') {
+                milestone = { id: current.id, number: Number(current.number), title: String(current.title), state: 'OPEN', url: '' };
+              }
+            }
             const onBoard = await placeOnBoard(String(existing.id), nodes(existing.projectItems));
             return result(false, existing, onBoard, [], used, await relations(existing));
           }
@@ -543,6 +608,7 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
             });
           }
 
+          await ensureMilestone();
           const created = await client.request<Json>(CREATE_SUB_ISSUE_MUTATION, {
             repositoryId,
             parentId,
@@ -554,6 +620,7 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
           const issue = obj(obj(obj(created.data)?.createIssue)?.issue);
           if (issue === null || typeof issue.id !== 'string') return fail('tracker_response', 'GitHub created no issue');
           const onBoard = await placeOnBoard(issue.id, []);
+          await setMilestone(issue.id, issue.number);
           return result(true, issue, onBoard, unknownLabels, used + 1, await relations(issue));
         }),
       ),
@@ -600,5 +667,18 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
       ),
   };
 
-  return [getIssue, getIssueByNumber, setStatus, addComment, openPullRequest, createSubIssue, publishReleaseTool];
+  const listMilestones: AgentToolSpec = {
+    name: 'list_milestones',
+    description: "List the milestones of the issue's repository (newest first, at most 100): title, number, state OPEN or CLOSED, url. Read-only.",
+    inputSchema: { state: z.enum(['open', 'closed', 'all']).optional().describe('Which milestones to list; default open') },
+    mutates: false,
+    execute: (args, context) =>
+      guarded(context, async (ref) => {
+        const states: Array<'OPEN' | 'CLOSED'> = args.state === 'closed' ? ['CLOSED'] : args.state === 'all' ? ['OPEN', 'CLOSED'] : ['OPEN'];
+        const found = await findMilestones(client, ref.repository, { states });
+        return ok({ milestones: found.map((m) => ({ title: m.title, number: m.number, state: m.state, url: m.url })) });
+      }),
+  };
+
+  return [getIssue, getIssueByNumber, listMilestones, setStatus, addComment, openPullRequest, createSubIssue, publishReleaseTool];
 }

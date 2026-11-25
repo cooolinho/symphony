@@ -1,7 +1,7 @@
 ---
 name: concept
 description: Concept workflow. Reads a concept (Markdown file in the repository), analyses it and creates epics and sub-issues from it in the backlog, with dependencies (Blocked by) as well as model and effort labels. Only load when the prompt asks for it (issue command /concept), never on your own.
-argument-hint: "<path to the concept, e.g. docs/index.md> [issue-models=auto|fable|opus|sonnet|haiku|off] [issue-efforts=auto|off]"
+argument-hint: "<path to the concept, e.g. docs/index.md> [issue-models=auto|fable|opus|sonnet|haiku|off] [issue-efforts=auto|off] [milestone=auto|off|<title>]"
 ---
 
 # Break a concept down into epics and issues
@@ -42,6 +42,21 @@ read-only commands, `git fetch` and a local `git switch --detach`. **Forbidden**
     (the architect `high`, the developer the model's default); a label would override that, so it is the exception.
   - `auto`: per issue the label that fits its size and risk ([breakdown.md](breakdown.md#labels)).
   - Any other value is invalid: treat it like `off` and put the warning in the notes section of the report.
+- `milestone=<auto|off|<title>>`: the GitHub milestone for the epics and issues of this run. Default `auto`. One
+  milestone per run; the concept issue itself gets none. Read the milestones with `list_milestones`.
+  - `auto`: `git fetch --tags origin`, then the tags of `git tag --merged origin/<base>` that match `vX.Y.Z` or
+    `X.Y.Z` (sort with `sort -V`) and the titles of `list_milestones(state: open)` that match the same pattern. Take
+    the highest of both and the next minor version after it: `X.(Y+1).0`, written like the SemVer milestones of the
+    repository (with or without `v`; without any, no `v`). Example: tag `v1.4.0`, open milestone `1.5.0` → `1.6.0`.
+    If that title exists as a closed milestone, go up one more minor. Without any SemVer tag and any SemVer milestone:
+    no milestone, and say so in the notes of the report. Two concepts run one after the other therefore get
+    consecutive milestones (`1.5.0`, then `1.6.0`), because the first run's milestone is open by then.
+  - `off`: no milestone.
+  - `<title>`: that milestone, e.g. `1.5.0` or `2.0.0`. Compare it with `list_milestones(state: all)` ignoring a
+    leading `v` and use an existing title exactly as it is spelled. If it is closed: no milestone, with a note in the
+    report (closed milestones are never reopened).
+  - An empty or invalid value: treat it like `auto` and put the warning in the notes section of the report.
+  - Text in the brief such as "Release 1.5.0" or "in 1.5.0" counts like `milestone=1.5.0`; an explicit argument wins.
 
 Text in the description below the command line counts as part of the brief (focus areas, order, exclusions).
 
@@ -57,13 +72,17 @@ Call `get_issue`. What matters are the comments (your own plans and reports, req
 - **Neither `## Concept Plan` nor `## Concept Report`**: new run, continue with Phase 1.
 - **`## Concept Plan` but no `## Concept Report`**: An earlier run aborted while creating. Read the concept anyway
   (Phase 1), but do not analyse it again: take the plan from the comment and carry out Phases 6 and 7 with it. Creating
-  is idempotent: the same title under the same parent returns the existing issue (`created: false`).
+  is idempotent: the same title under the same parent returns the existing issue (`created: false`). Take the
+  milestone from the `**milestone:**` line of the plan and do not determine it again, so no second milestone is
+  created. A plan without that line predates the feature: treat it as `milestone=off`.
 - **`## Concept Report` present**: addendum. Read the concept and the new comments by humans and create only what is
   missing from the report: the section "Not created", new requirements, requests. Nothing that is in the report is
   created again, even if it has been closed since. Epics you need for this you get back by their title
   (`created: false`): take it exactly as it stands among the concept issue's sub-issues today, key included, not from
   the report. A new epic or issue gets the next free key of its area; a key is never given twice, not even one of a
-  closed issue. Number the reports consecutively (`## Concept Report (addendum 1)`).
+  closed issue. Number the reports consecutively (`## Concept Report (addendum 1)`). The addendum uses the milestone of
+  the plan; if `list_milestones(state: all)` shows it closed by now (the release is done), determine a new one like
+  `auto` and say so in the notes of the report.
 
 Plans written before keys went into titles write keys as `E1.1` (read it as `E1-1`) and may have epics whose title has
 no key. Keep such a title as it is: adding a key creates a second epic.
@@ -109,7 +128,9 @@ report.
    or `maintenance`), with `issue-efforts=auto` exactly one `Effort: …`, with `issue-models` other than `off` exactly
    one `Model: …`. Epics carry
    `epic` and `concept`, nothing else.
-3. Give every epic and issue a stable key and a unique title that starts with that key in parentheses:
+3. Decide the **milestone** once per run (the `milestone` argument, see above) and keep it for every call. With a
+   name, `list_milestones(state: all)` tells whether it exists (`existing`) or will be created (`new`).
+4. Give every epic and issue a stable key and a unique title that starts with that key in parentheses:
    - **Epic** `E<n>`, title `(E<n>) Epic: <area>`. Count from 1 in the order of the concept; if the concept numbers its
      areas itself (`E0` … `E11`), take its numbers. An area cut into several epics gets one letter per epic (`E1a`,
      `E1b`).
@@ -121,7 +142,7 @@ report.
 ## Phase 5: Record the plan
 
 Post exactly one comment `## Concept Plan` **before creating anything** ([templates.md](templates.md#plan)): concept
-path and state, epics with their issues (key, title, category, size, labels, dependencies) and the coverage list. It is
+path and state, the milestone, epics with their issues (key, title, category, size, labels, dependencies) and the coverage list. It is
 the basis for a continuation if this run aborts.
 
 ## Phase 6: Create
@@ -132,8 +153,12 @@ Only with `create_sub_issue`, never with git, `gh` or the API. Templates for the
    `create_sub_issue(title, body, labels: ["epic", "concept"])`, without `parent`.
 2. The issue: `create_sub_issue(title, body, labels, parent: <number of the epic>, blocked_by: [<numbers of the blockers>])`.
    The line `Blocked by #N` (literally, in English) additionally goes into the text, directly below the goal.
+   With a milestone, pass `milestone: "<title>"` on **every** call, epics and issues alike (the tool creates the
+   milestone on the first call and reuses it). If a call fails with `invalid_argument` because the milestone is closed,
+   switch the milestone off for the rest of the run, repeat the call without it and note it in the report.
 3. Remember the `number` of every result: you need it as `parent` and for `blocked_by`. Watch for `unknown_labels`
-   (label missing in the repository, the issue was created without it), `unknown_blockers`, `warnings` and `remaining`.
+   (label missing in the repository, the issue was created without it), `unknown_blockers`, `warnings` (also an issue that kept a different milestone) and `remaining`. The `milestone` of the
+   result says whether it was created.
 4. Stop at the first `limit_reached`: all further issues go into the report under "Not created". The limit counts
    epics too; that is why you create an epic only when it gets its first issue.
 5. An error (`github_error`, `invalid_argument`) affects only this issue: read the message, correct the call once,
@@ -142,8 +167,8 @@ Only with `create_sub_issue`, never with git, `gh` or the API. Templates for the
 ## Phase 7: Report
 
 Post exactly one comment `## Concept Report` ([templates.md](templates.md#report)): the tree with numbers, per issue
-the labels with the reason, "Not created", open questions and notes (`limit_reached`, `unknown_labels`,
-`unknown_blockers`, `warnings`). If a label such as `epic`, `concept`, `Model: …` or `Effort: …` is missing in the
+the milestone with its link, the labels with the reason, "Not created", open questions and notes (`limit_reached`, `unknown_labels`,
+`unknown_blockers`, `warnings`, closed or conflicting milestones, "no SemVer tag or milestone"). If a label such as `epic`, `concept`, `Model: …` or `Effort: …` is missing in the
 repository, say so, noting that `npm run repo-init` → *Standard labels* creates it.
 
 Then `set_status("In review")` and end the turn. The concept issue is now the root epic. Whoever wants to extend the
