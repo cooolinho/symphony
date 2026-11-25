@@ -122,7 +122,8 @@ they create are sub-issues of that issue (`create_sub_issue`).
 | `set_status` | `status` | yes | Moves the board item; the name is matched case-insensitively. An unknown name returns the valid options. Guarded: see below. Entering `auto_merge.on_enter` triggers the [auto-merge](#auto-merge); the result then carries `auto_merge` and the final `status`. Not offered to [roles](../configuration.md#roles) with `result`: they hand off with Symphony's [`report_result`](../results.md#the-report_result-tool), which moves the issue through the same adapter operation. |
 | `add_comment` | `body`, `issue?` | yes | Posts a comment on the issue; returns its URL. With `issue` (a number) the comment goes to an ancestor of the session's issue instead: its parent, that issue's parent and so on, at most 5 levels, same repository (e.g. epic or concept issue). The chain is read fresh on each call; any other number (sibling, sub-issue, pull request, unknown, other repository) is rejected with `invalid_argument` naming the allowed numbers, and nothing is posted. A comment on an ancestor ends with `<sub>aus owner/repo#N</sub>` naming the session's issue, and must not use the headings `Concept Plan` or `Concept Report` (used by /concept). Text containing `<!-- symphony:` is rejected (`invalid_argument`), see [Stage-result markers](#stage-result-markers-and-the-bot-account). |
 | `open_pull_request` | `head`, `title`, `body?`, `base?`, `draft?` | yes | Opens a PR from an already pushed branch (base defaults to `base_branch`, else the default branch). An open PR for the same branch is returned instead of a duplicate (`created: false`). |
-| `create_sub_issue` | `title`, `body?`, `labels?`, `parent?`, `blocked_by?` | yes | Creates a sub-issue of the session's issue (or, with `parent`, of one of its open sub-issues) in the same repository, adds it to the board in the `sub_issue_status` column (the role's, else the provider's) and returns `{created, number, identifier, url, status, on_board, unknown_labels, remaining, warnings?}`; with `parent` it also returns `parent`, with `blocked_by` also `blocked_by` and `unknown_blockers`. Only offered to [roles](../configuration.md#roles) with `max_sub_issues`. Title and body with `<!-- symphony:` are rejected like in `add_comment`. See below. |
+| `create_sub_issue` | `title`, `body?`, `labels?`, `parent?`, `blocked_by?`, `milestone?` | yes | Creates a sub-issue of the session's issue (or, with `parent`, of one of its open sub-issues) in the same repository, adds it to the board in the `sub_issue_status` column (the role's, else the provider's) and returns `{created, number, identifier, url, status, on_board, unknown_labels, remaining, warnings?}`; with `parent` it also returns `parent`, with `blocked_by` also `blocked_by` and `unknown_blockers`. Only offered to [roles](../configuration.md#roles) with `max_sub_issues`. Title and body with `<!-- symphony:` are rejected like in `add_comment`. See below. |
+| `list_milestones` | `state?` (`open` default, `closed`, `all`) | no | JSON `{milestones: [{title, number, state, url}]}`: milestones of the session's repository, newest first, at most 100. Offered to every role. |
 | `publish_release` | `version`, `pull_request`, `notes`, `files` | yes | Publishes a release from a version-bump pull request into the base branch and returns `{status: published\|pending\|failed, step, reason, tag, release_url, merged: {bump, release}, next, issue_status?, warnings?}`. Only offered to [roles](../configuration.md#roles) with `publishes_releases`, and refuses (`not_allowed`) without [`release.enabled`](#releases). See [Releases](#releases). |
 
 `set_status` declares its target column (`transitionTarget`), so Symphony's
@@ -149,6 +150,17 @@ the issue is added to the board and its status is set to `sub_issue_status`. The
   Numbers that are no issue (a typo, a pull request) come back in `unknown_blockers`; a failing mutation becomes a
   `warnings` entry. The relationship is additional to a "Blocked by #N" line in the body, which Symphony reads too
   (see [Dependencies](#dependencies)); both count as one dependency.
+- **`milestone`** (a title such as `1.5.0`) puts the issue into an open milestone of the repository. The open milestone
+  with that title is looked up first (`repository.milestones`, open and closed, titles compared without case); a
+  **closed** milestone with that title fails the call with `invalid_argument` before anything is created, since closed
+  milestones are never reopened. If no milestone exists it is created (REST `POST /repos/{repo}/milestones`); when that
+  answers 422 `already_exists` (created meanwhile by someone else) the lookup runs again. The milestone is set after the
+  issue exists, with its own `updateIssue` mutation, so a failure never loses the issue: it becomes a `warnings` entry
+  and the call still succeeds. An existing sub-issue (`created: false`) without a milestone gets it; one with another
+  milestone keeps it and gets a warning. The result then carries `milestone: {title, number, url, created}`
+  (`null` if the milestone could not be resolved); `created` is true only in the call that created the milestone. A
+  call without `milestone` sends none of these requests and returns no `milestone` field. Creating a milestone needs
+  the token scope of the repository (classic `repo`, fine-grained *Issues: write*).
 - `labels` must already exist in the repository. Unknown ones are skipped and reported in `unknown_labels`; labels are
   never created.
 - Once the issue exists, failures of the board steps (no access to the project, the column is missing on the board)
@@ -157,7 +169,7 @@ the issue is added to the board and its status is set to `sub_issue_status`. The
 - A project workflow such as "Item added to project" can set its own status after the tool did; configure it to match
   `sub_issue_status` or turn it off.
 - Errors: `not_allowed` (the role has no `max_sub_issues`), `limit_reached`, `invalid_argument` (`parent` is no open
-  sub-issue of the session's issue), `github_error` (GitHub rejected the mutation, e.g. missing permission), `not_found`.
+  sub-issue of the session's issue, or `milestone` names a closed milestone), `github_error` (GitHub rejected the mutation, e.g. missing permission), `not_found`.
 
 Failures come back to the agent as structured tool errors (`{error: {category, message}}`), so it can correct its
 input. Keep GitHub's secondary rate limits in mind: content-creating calls such as comments are limited to roughly

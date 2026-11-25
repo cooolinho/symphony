@@ -67,7 +67,9 @@ starts with `/refactor-safely` on the first line; `Blocked by` follows below it.
 ```markdown
 ## Concept Plan
 
-**Concept:** `<path>` @ `<base>` <short commit hash> · **issue-models:** <auto|fable|opus|sonnet|haiku|off>
+**Concept:** `<path>` @ `<base>` <short commit hash> · **issue-models:** <auto|fable|opus|sonnet|haiku|off> · **milestone:** <title> (new|existing|off)
+
+For `auto` in a repository without SemVer: `**milestone:** off (no SemVer tag or milestone)`.
 
 ### Epics and issues
 - **(E1) Epic: <area>**: <one sentence>
@@ -95,7 +97,7 @@ E1-1, E1-2, E2-1, …
 ```markdown
 ## Concept Report
 
-**Concept:** `<path>` @ `<base>` <short commit hash>
+**Concept:** `<path>` @ `<base>` <short commit hash> · **Milestone:** [<title>](<url>) (or `off`)
 
 ### Created (backlog)
 - [ ] #<n> **(E1) Epic: <area>**
@@ -111,7 +113,7 @@ E1-1, E1-2, E2-1, …
 - <decision a human should make, and what depends on it>
 
 ### Notes
-<`limit_reached`, unknown labels (`unknown_labels`), `unknown_blockers`, `warnings`, invalid arguments.>
+<`limit_reached`, unknown labels (`unknown_labels`), `unknown_blockers`, `warnings`, invalid arguments, closed or conflicting milestones (an issue that kept another one), "no SemVer tag or milestone".>
 
 All issues are in the backlog. Review them, drop or add some and move them to "Ready" one by one: an issue with an
 open "Blocked by" waits in "Ready" until its blockers are closed. The epics stay in the backlog and are closed when
