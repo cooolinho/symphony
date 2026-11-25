@@ -3,11 +3,12 @@
 // span = ceil((height + gap) / unit); the card gets `grid-row-end: span n`. The gap between cards is the card's
 // margin-bottom (= column-gap), row-gap stays 0.
 //
-// The 4 px rows only apply with the activation class `masonry-on` (set by the observer script of E2-2, once it can
-// measure). Without it (no JS, no spans) the rows are auto-high and the container is a plain, readable grid.
+// The 4 px rows only apply with the activation class `masonry-on`, which `masonryMount` (E2-2) sets once a
+// ResizeObserver exists. Without it (no JS, no observer, no spans) the rows are auto-high and the container is a plain,
+// readable grid.
 //
-// Not wired into any page yet (E3-1), no ResizeObserver here (E2-2). All top-level names of the script start with
-// `masonry` / `MASONRY_` so they cannot clash with the page script.
+// Not wired into any page yet (E3-1). All top-level names of the script start with `masonry` / `MASONRY_` so they
+// cannot clash with the page script. No transitions: cards change position without animation.
 
 export const MASONRY_UNIT_PX = 4;
 export const MASONRY_GAP_PX = 16;
@@ -25,6 +26,7 @@ export const MASONRY_CSS = `
 }
 .masonry.masonry-on { grid-auto-rows: ${MASONRY_UNIT_PX}px; }
 .masonry > * { align-self: start; min-width: 0; margin-bottom: ${MASONRY_GAP_PX}px; }
+.masonry > [hidden] { display: none; }
 @media (min-width: ${MASONRY_WIDE_MIN_VIEWPORT_PX}px) {
   .masonry > .wide { grid-column: span 2; }
 }
@@ -50,5 +52,53 @@ function masonryApplySpan(card, span) {
   card.dataset.masonrySpan = n;
   card.style.gridRowEnd = 'span ' + n;
   return true;
+}
+
+// Block height from an observer entry: borderBoxSize (array, or a single object in old Firefox), else the rect.
+function masonryHeight(entry) {
+  let box = entry.borderBoxSize;
+  if (Array.isArray(box)) box = box[0];
+  if (box && Number.isFinite(box.blockSize)) return box.blockSize;
+  return entry.target.getBoundingClientRect().height;
+}
+
+// Keeps the spans of all cards of the container up to date with exactly one ResizeObserver.
+// Contract (E3-1): call once after the first render, then handle.refresh() after every render that adds or removes
+// cards or toggles hidden on them. refresh() is chosen over a mutation observer: seeing hidden on direct
+// children needs subtree: true, which reports every [hidden] inside the cards on each poll; it would be a second
+// observer; and refresh() is deterministic and free when nothing changed. Cards that vanish are also released by the
+// observer callback itself (hidden / detached cards measure 0). Without ResizeObserver: no-op handle, plain grid.
+function masonryMount(container) {
+  if (typeof ResizeObserver !== 'function') return { refresh() {} };
+  const observed = new Set();
+  const release = (card) => {
+    if (!observed.delete(card)) return;
+    ro.unobserve(card);
+    if (card.dataset.masonrySpan === undefined) return;
+    delete card.dataset.masonrySpan;
+    card.style.gridRowEnd = '';
+  };
+  const ro = new ResizeObserver((entries) => {
+    for (const entry of entries) {
+      const card = entry.target;
+      if (card.parentNode !== container || card.hidden) {
+        release(card);
+        continue;
+      }
+      masonryApplySpan(card, masonrySpan(masonryHeight(entry)));
+    }
+  });
+  const refresh = () => {
+    const want = Array.from(container.children).filter((c) => !c.hidden);
+    for (const card of Array.from(observed)) if (!want.includes(card)) release(card);
+    for (const card of want) {
+      if (observed.has(card)) continue;
+      observed.add(card);
+      ro.observe(card);
+    }
+  };
+  container.classList.add('masonry-on');
+  refresh();
+  return { refresh };
 }
 `;

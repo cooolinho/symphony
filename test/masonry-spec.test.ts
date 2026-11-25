@@ -187,6 +187,6 @@ describe('masonry spec: constraints', () => {
   });
 
   it('is framework free: no innerHTML, observers, imports or requires', () => {
-    assert.doesNotMatch(MASONRY_JS, /innerHTML|insertAdjacentHTML|ResizeObserver|MutationObserver|\brequire\(|\bimport\b/);
+    assert.doesNotMatch(MASONRY_JS, /innerHTML|insertAdjacentHTML|MutationObserver|\brequire\(|\bimport\b/);
   });
 });

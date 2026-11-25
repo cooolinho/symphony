@@ -44,9 +44,9 @@ describe('MASONRY_CSS', () => {
 });
 
 describe('MASONRY_JS', () => {
-  it('is a valid script without forbidden APIs', () => {
+  it('is a valid script without forbidden APIs (innerHTML, MutationObserver)', () => {
     assert.doesNotThrow(() => new vm.Script(MASONRY_JS));
-    assert.doesNotMatch(MASONRY_JS + MASONRY_CSS, /innerHTML|ResizeObserver/);
+    assert.doesNotMatch(MASONRY_JS + MASONRY_CSS, /innerHTML|MutationObserver/);
     const names = [...MASONRY_JS.matchAll(/^function\s+(\w+)/gm)].map((m) => m[1]!);
     assert.ok(names.length >= 2);
     for (const n of names) assert.match(n, /^masonry/);
@@ -86,5 +86,358 @@ describe('MASONRY_JS', () => {
       assert.equal(run(ctx, `masonryApplySpan(card, ${bad})`), false);
     }
     assert.equal(card.style.gridRowEnd, 'span 30');
+  });
+});
+
+describe('masonryMount', () => {
+  class RO {
+    static instances: RO[] = [];
+    observed = new Set<FakeElement>();
+    observes = 0;
+    unobserves = 0;
+    cb: (entries: unknown[], ro: RO) => void;
+    constructor(cb: (entries: unknown[], ro: RO) => void) {
+      this.cb = cb;
+      RO.instances.push(this);
+    }
+    observe(el: FakeElement): void {
+      this.observed.add(el);
+      this.observes++;
+    }
+    unobserve(el: FakeElement): void {
+      this.observed.delete(el);
+      this.unobserves++;
+    }
+    disconnect(): void {}
+    fire(entries: unknown[]): void {
+      this.cb(entries, this);
+    }
+  }
+  const entry = (card: FakeElement, h: number) => ({ target: card, borderBoxSize: [{ blockSize: h }] });
+  const setup = (n: number, hiddenIdx: number[] = [], withRO = true) => {
+    RO.instances = [];
+    const box = new FakeElement('div');
+    box.className = 'masonry';
+    const cards: FakeElement[] = [];
+    for (let i = 0; i < n; i++) {
+      const c = new FakeElement('div');
+      c.hidden = hiddenIdx.includes(i);
+      box.appendChild(c);
+      cards.push(c);
+    }
+    const ctx = scriptContext(MASONRY_JS);
+    if (withRO) ctx.ResizeObserver = RO;
+    ctx.box = box;
+    const handle = run(ctx, 'masonryMount(box)') as { refresh(): void };
+    return { box, cards, handle, ro: RO.instances[0]! };
+  };
+  const countWrites = (card: FakeElement): { n: number } => {
+    const count = { n: 0 };
+    let v: unknown = '';
+    Object.defineProperty(card.style, 'gridRowEnd', {
+      get: () => v,
+      set: (x) => {
+        count.n++;
+        v = x;
+      },
+      configurable: true,
+    });
+    return count;
+  };
+
+  it('creates one observer, observes visible cards only, activates the grid', () => {
+    const { box, cards, handle, ro } = setup(3, [1]);
+    assert.equal(RO.instances.length, 1);
+    assert.deepEqual([...ro.observed], [cards[0], cards[2]]);
+    assert.ok(box.classList.contains('masonry-on'));
+    handle.refresh();
+    assert.equal(ro.observes, 2);
+  });
+
+  it('callback applies span from borderBoxSize, else from the rect', () => {
+    const { cards, ro } = setup(2);
+    ro.fire([entry(cards[0]!, 100)]);
+    assert.equal(cards[0]!.style.gridRowEnd, 'span 29');
+    cards[1]!.getBoundingClientRect = () => ({ height: 84 }) as never;
+    ro.fire([{ target: cards[1] }]);
+    assert.equal(cards[1]!.style.gridRowEnd, 'span 25');
+  });
+
+  it('writes once for equal heights, again for a changed one', () => {
+    const { cards, ro } = setup(1);
+    const w = countWrites(cards[0]!);
+    ro.fire([entry(cards[0]!, 100)]);
+    ro.fire([entry(cards[0]!, 100)]);
+    assert.equal(w.n, 1);
+    ro.fire([entry(cards[0]!, 120)]);
+    assert.equal(w.n, 2);
+  });
+
+  it('hidden cards are released and observed again once shown', () => {
+    const { cards, handle, ro } = setup(1);
+    ro.fire([entry(cards[0]!, 100)]);
+    cards[0]!.hidden = true;
+    handle.refresh();
+    assert.equal(ro.unobserves, 1);
+    assert.equal(cards[0]!.dataset.masonrySpan, undefined);
+    cards[0]!.hidden = false;
+    handle.refresh();
+    assert.ok(ro.observed.has(cards[0]!));
+    ro.fire([entry(cards[0]!, 100)]);
+    assert.equal(cards[0]!.style.gridRowEnd, 'span 29');
+    assert.ok(rule('.masonry > [hidden]').includes('display: none'));
+  });
+
+  it('removed cards are unobserved, new cards observed', () => {
+    const { box, cards, handle, ro } = setup(2);
+    box.removeChild(cards[0]!);
+    handle.refresh();
+    assert.equal(ro.unobserves, 1);
+    assert.ok(!ro.observed.has(cards[0]!));
+    const fresh = new FakeElement('div');
+    box.appendChild(fresh);
+    handle.refresh();
+    assert.ok(ro.observed.has(fresh));
+  });
+
+  it('releases a removed card on its own callback without writing', () => {
+    const { box, cards, ro } = setup(1);
+    const w = countWrites(cards[0]!);
+    box.removeChild(cards[0]!);
+    ro.fire([entry(cards[0]!, 100)]);
+    assert.equal(ro.unobserves, 1);
+    assert.equal(w.n, 0);
+  });
+
+  it('without ResizeObserver: no error, no class, no span', () => {
+    const { box, cards, handle } = setup(2, [], false);
+    assert.ok(!box.classList.contains('masonry-on'));
+    for (const c of cards) {
+      assert.equal(c.style.gridRowEnd, undefined);
+      assert.equal(c.dataset.masonrySpan, undefined);
+    }
+    assert.doesNotThrow(() => handle.refresh());
+  });
+
+  it('has no transition or animation', () => {
+    assert.doesNotMatch(MASONRY_CSS + MASONRY_JS, /transition|animation/);
+  });
+});
+
+// Independent acceptance tests for E2-2 (derived from the issue, not from the implementation).
+describe('masonryMount acceptance (E2-2)', () => {
+  class Stub {
+    static all: Stub[] = [];
+    log: string[] = [];
+    live = new Set<FakeElement>();
+    cb: (entries: unknown[]) => void;
+    constructor(cb: (entries: unknown[]) => void) {
+      this.cb = cb;
+      Stub.all.push(this);
+    }
+    observe(el: FakeElement): void {
+      this.log.push('observe');
+      this.live.add(el);
+    }
+    unobserve(el: FakeElement): void {
+      this.log.push('unobserve');
+      this.live.delete(el);
+    }
+    disconnect(): void {
+      this.live.clear();
+    }
+    count(kind: string): number {
+      return this.log.filter((l) => l === kind).length;
+    }
+  }
+  const mk = (n: number, hidden: number[] = []) => {
+    const box = new FakeElement('div');
+    box.className = 'masonry';
+    const cards = Array.from({ length: n }, (_, i) => {
+      const c = new FakeElement('section');
+      if (hidden.includes(i)) c.hidden = true;
+      box.appendChild(c);
+      return c;
+    });
+    return { box, cards };
+  };
+  const mount = (box: FakeElement, withRO = true) => {
+    Stub.all = [];
+    const ctx = scriptContext(MASONRY_JS);
+    if (withRO) ctx.ResizeObserver = Stub;
+    ctx.box = box;
+    const handle = run(ctx, 'masonryMount(box)') as { refresh(): void };
+    return { ctx, handle, ro: Stub.all[0]! };
+  };
+
+  it('exactly one observer per mount, even with many cards and repeated refresh', () => {
+    const { box } = mk(12, [3, 4]);
+    const { handle } = mount(box);
+    handle.refresh();
+    handle.refresh();
+    assert.equal(Stub.all.length, 1);
+    assert.equal(Stub.all[0]!.live.size, 10);
+    assert.equal(Stub.all[0]!.count('observe'), 10, 'no double observe');
+  });
+
+  it('observes only direct children, not nested elements', () => {
+    const { box, cards } = mk(1);
+    const inner = new FakeElement('div');
+    cards[0]!.appendChild(inner);
+    const { ro } = mount(box);
+    assert.deepEqual([...ro.live], [cards[0]]);
+  });
+
+  it('handles an empty container', () => {
+    const { box } = mk(0);
+    const { handle, ro } = mount(box);
+    assert.equal(ro.live.size, 0);
+    assert.doesNotThrow(() => handle.refresh());
+  });
+
+  it('one callback with several entries sets each card its own span', () => {
+    const { box, cards } = mk(3);
+    const { ro } = mount(box);
+    ro.cb([
+      { target: cards[0], borderBoxSize: [{ blockSize: 84 }] },
+      { target: cards[1], borderBoxSize: [{ blockSize: 200 }] },
+      { target: cards[2], borderBoxSize: [{ blockSize: 4 }] },
+    ]);
+    assert.equal(cards[0]!.style.gridRowEnd, 'span 25');
+    assert.equal(cards[1]!.style.gridRowEnd, 'span 54');
+    assert.equal(cards[2]!.style.gridRowEnd, 'span 5');
+  });
+
+  it('accepts borderBoxSize as a single object (old Firefox)', () => {
+    const { box, cards } = mk(1);
+    const { ro } = mount(box);
+    ro.cb([{ target: cards[0], borderBoxSize: { blockSize: 84 } }]);
+    assert.equal(cards[0]!.style.gridRowEnd, 'span 25');
+  });
+
+  it('prefers borderBoxSize over the rect', () => {
+    const { box, cards } = mk(1);
+    cards[0]!.getBoundingClientRect = () => ({ height: 1000 }) as never;
+    const { ro } = mount(box);
+    ro.cb([{ target: cards[0], borderBoxSize: [{ blockSize: 84 }] }]);
+    assert.equal(cards[0]!.style.gridRowEnd, 'span 25');
+  });
+
+  it('falls back to the rect when borderBoxSize is empty', () => {
+    const { box, cards } = mk(1);
+    cards[0]!.getBoundingClientRect = () => ({ height: 84 }) as never;
+    const { ro } = mount(box);
+    ro.cb([{ target: cards[0], borderBoxSize: [] }]);
+    assert.equal(cards[0]!.style.gridRowEnd, 'span 25');
+  });
+
+  it('a callback without height change writes no style (counter over many callbacks)', () => {
+    const { box, cards } = mk(1);
+    const { ro } = mount(box);
+    let writes = 0;
+    let v: unknown;
+    Object.defineProperty(cards[0]!.style, 'gridRowEnd', {
+      get: () => v,
+      set: (x) => {
+        writes++;
+        v = x;
+      },
+      configurable: true,
+    });
+    for (let i = 0; i < 5; i++) ro.cb([{ target: cards[0], borderBoxSize: [{ blockSize: 120 }] }]);
+    assert.equal(writes, 1);
+    // a sub-span change in pixels (same ceil) must not write either
+    ro.cb([{ target: cards[0], borderBoxSize: [{ blockSize: 119.5 }] }]);
+    assert.equal(writes, 1);
+  });
+
+  it('a hidden card is never observed and gets no span', () => {
+    const { box, cards } = mk(2, [0]);
+    const { ro } = mount(box);
+    assert.ok(!ro.live.has(cards[0]!));
+    assert.ok(ro.live.has(cards[1]!));
+    assert.equal(cards[0]!.style.gridRowEnd, undefined);
+  });
+
+  it('hiding an observed card unobserves it; showing it observes it again', () => {
+    const { box, cards } = mk(2);
+    const { handle, ro } = mount(box);
+    cards[1]!.hidden = true;
+    handle.refresh();
+    assert.ok(!ro.live.has(cards[1]!));
+    assert.ok(ro.live.has(cards[0]!), 'other cards stay observed');
+    cards[1]!.hidden = false;
+    handle.refresh();
+    assert.ok(ro.live.has(cards[1]!));
+    assert.equal(Stub.all.length, 1, 'still a single observer');
+  });
+
+  it('removing several cards unobserves each of them', () => {
+    const { box, cards } = mk(4);
+    const { handle, ro } = mount(box);
+    box.removeChild(cards[1]!);
+    box.removeChild(cards[3]!);
+    handle.refresh();
+    assert.equal(ro.count('unobserve'), 2);
+    assert.deepEqual([...ro.live], [cards[0], cards[2]]);
+  });
+
+  it('a card re-added after removal is observed again', () => {
+    const { box, cards } = mk(1);
+    const { handle, ro } = mount(box);
+    box.removeChild(cards[0]!);
+    handle.refresh();
+    box.appendChild(cards[0]!);
+    handle.refresh();
+    assert.ok(ro.live.has(cards[0]!));
+  });
+
+  it('refresh without changes neither observes nor unobserves', () => {
+    const { box } = mk(3, [1]);
+    const { handle, ro } = mount(box);
+    const before = ro.log.length;
+    handle.refresh();
+    assert.equal(ro.log.length, before);
+  });
+
+  it('without ResizeObserver: nothing visible, no error, refresh is harmless', () => {
+    const { box, cards } = mk(3, [1]);
+    const before = box.className;
+    let handle: { refresh(): void } | undefined;
+    assert.doesNotThrow(() => {
+      handle = mount(box, false).handle;
+    });
+    assert.equal(Stub.all.length, 0);
+    assert.equal(box.className, before);
+    assert.ok(!box.classList.contains('masonry-on'));
+    for (const c of cards) assert.equal(c.style.gridRowEnd, undefined);
+    assert.doesNotThrow(() => handle!.refresh());
+  });
+
+  it('two containers get one observer each (no shared global state)', () => {
+    const a = mk(2).box;
+    const b = mk(2).box;
+    Stub.all = [];
+    const ctx = scriptContext(MASONRY_JS);
+    ctx.ResizeObserver = Stub;
+    ctx.a = a;
+    ctx.b = b;
+    run(ctx, 'masonryMount(a); masonryMount(b)');
+    assert.equal(Stub.all.length, 2);
+    assert.equal(Stub.all[0]!.live.size, 2);
+    assert.equal(Stub.all[1]!.live.size, 2);
+  });
+
+  it('CSS: hidden cards take no space, no transition on position, no motion handling needed', () => {
+    assert.match(MASONRY_CSS, /\.masonry > \[hidden\] \{ display: none; \}/);
+    assert.doesNotMatch(MASONRY_CSS, /transition/);
+    assert.doesNotMatch(MASONRY_CSS, /prefers-reduced-motion/);
+    assert.doesNotMatch(MASONRY_CSS, /animation/);
+  });
+
+  it('script uses a ResizeObserver only (no MutationObserver, no innerHTML)', () => {
+    assert.match(MASONRY_JS, /new ResizeObserver\(/);
+    assert.equal((MASONRY_JS.match(/new ResizeObserver\(/g) ?? []).length, 1);
+    assert.doesNotMatch(MASONRY_JS, /MutationObserver|innerHTML/);
   });
 });
