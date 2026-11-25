@@ -2353,3 +2353,173 @@ describe('github_project create_sub_issue milestone', () => {
     assert.deepEqual((await titles({ state: 'all' })).sort(), ['1.4.0', '1.5.0']);
   });
 });
+
+describe('github_project create_sub_issue milestone: edge cases (test round 1)', () => {
+  const open = (title: string, number = 1) => ({ id: `MI_x${number}`, number, title, state: 'OPEN', url: `https://github.com/acme/app/milestone/${number}` });
+
+  async function setup() {
+    const github = new FakeGithub().add(itemNode('A', { number: 1 }));
+    const tracker = adapter(github, { sub_issue_status: 'Human Review' });
+    const [issue] = await tracker.fetchIssuesByIds(['A']);
+    const tool = tracker.agentToolSpecs().find((t) => t.name === 'create_sub_issue');
+    assert.ok(tool);
+    const run = (args: Json) => tool.execute(args, { issue: issue as Issue, maxSubIssues: 10 });
+    const ops = (op: string) => github.requests.filter((r) => r.op === op);
+    return { github, run, ops };
+  }
+  const dataOf = (result: ToolResult): Json => {
+    assert.equal(result.ok, true, JSON.stringify(result));
+    return (result as { ok: true; data: Json }).data;
+  };
+
+  it('creates the milestone through the REST route of the repository with the trimmed title', async () => {
+    const { run, ops } = await setup();
+    const data = dataOf(await run({ title: 'X', milestone: '  1.5.0  ' }));
+    const posts = ops('REST POST milestones');
+    assert.equal(posts.length, 1);
+    assert.equal(posts[0]?.variables.title, '1.5.0');
+    assert.match(String(posts[0]?.variables.url), /\/repos\/acme\/app\/milestones$/);
+    assert.equal((data.milestone as Json).title, '1.5.0');
+  });
+
+  it('reuses an open milestone whose title differs only in case', async () => {
+    const { github, run, ops } = await setup();
+    github.milestones.push(open('Release Alpha', 4));
+    const data = dataOf(await run({ title: 'X', milestone: 'release alpha' }));
+    assert.equal(ops('REST POST milestones').length, 0);
+    assert.equal((data.milestone as Json).number, 4);
+    assert.equal((data.milestone as Json).created, false);
+  });
+
+  it('does not match a milestone that merely contains the title', async () => {
+    const { github, run, ops } = await setup();
+    github.milestones.push(open('1.5.0-beta', 4), open('11.5.0', 5));
+    const data = dataOf(await run({ title: 'X', milestone: '1.5.0' }));
+    assert.equal(ops('REST POST milestones').length, 1);
+    assert.equal((data.milestone as Json).created, true);
+    assert.notEqual((data.milestone as Json).number, 4);
+    assert.notEqual((data.milestone as Json).number, 5);
+  });
+
+  it('prefers the open milestone when a closed one has the same title', async () => {
+    const { github, run, ops } = await setup();
+    github.milestones.push({ ...open('1.5.0', 2), state: 'CLOSED' }, open('1.5.0', 3));
+    const data = dataOf(await run({ title: 'X', milestone: '1.5.0' }));
+    assert.equal((data.milestone as Json).number, 3);
+    assert.equal(ops('REST POST milestones').length, 0);
+  });
+
+  it('rejects a closed milestone also for an issue that already exists, and changes nothing', async () => {
+    const { github, run, ops } = await setup();
+    github.milestones.push({ ...open('1.5.0'), state: 'CLOSED' });
+    github.subIssues.set('I_A', [{ id: 'I_old', number: 7, title: 'Old', state: 'OPEN', url: 'u', projectItems: { nodes: [] } }]);
+    const result = await run({ title: 'Old', milestone: '1.5.0' });
+    assert.equal(result.ok === false && result.error.category, 'invalid_argument');
+    assert.equal(ops('SymphonySetIssueMilestone').length, 0);
+    assert.equal(ops('REST POST milestones').length, 0);
+  });
+
+  it('rejects a blank milestone', async () => {
+    const { run, ops } = await setup();
+    const result = await run({ title: 'X', milestone: '   ' });
+    assert.equal(result.ok, false);
+    assert.equal(ops('SymphonyCreateSubIssue').length, 0);
+  });
+
+  it('creates a missing milestone for an existing issue without one and sets it', async () => {
+    const { github, run, ops } = await setup();
+    github.subIssues.set('I_A', [{ id: 'I_old', number: 7, title: 'Old', state: 'OPEN', url: 'u', projectItems: { nodes: [] } }]);
+    const data = dataOf(await run({ title: 'Old', milestone: '1.6.0' }));
+    assert.equal(data.created, false);
+    assert.equal(ops('REST POST milestones').length, 1);
+    assert.deepEqual(ops('SymphonySetIssueMilestone').map((r) => r.variables.issueId), ['I_old']);
+    assert.equal((data.milestone as Json).title, '1.6.0');
+    assert.equal((data.milestone as Json).created, true);
+  });
+
+  it('reports the milestone of an existing issue that already has the requested one, without setting it again', async () => {
+    const { github, run, ops } = await setup();
+    github.milestones.push(open('1.5.0', 6));
+    github.subIssues.set('I_A', [{ id: 'I_same', number: 8, title: 'Same', state: 'OPEN', url: 'u', milestone: { id: 'MI_x6', number: 6, title: '1.5.0' }, projectItems: { nodes: [] } }]);
+    const data = dataOf(await run({ title: 'Same', milestone: '1.5.0' }));
+    assert.equal(data.created, false);
+    assert.equal((data.milestone as Json).number, 6);
+    assert.equal(ops('SymphonySetIssueMilestone').length, 0);
+    assert.equal(data.warnings, undefined);
+  });
+
+  it('a repeated call for the same title after a created issue does not create a second milestone or issue', async () => {
+    const { run, ops } = await setup();
+    dataOf(await run({ title: 'Same', milestone: '1.5.0' }));
+    const again = dataOf(await run({ title: 'Same', milestone: '1.5.0' }));
+    assert.equal(again.created, false);
+    assert.equal(ops('REST POST milestones').length, 1);
+    assert.equal(ops('SymphonyCreateSubIssue').length, 1);
+    assert.equal((again.milestone as Json).title, '1.5.0');
+  });
+
+  it('two different titles in turn create two milestones with different numbers', async () => {
+    const { run, ops } = await setup();
+    const a = dataOf(await run({ title: 'A1', milestone: '1.5.0' }));
+    const b = dataOf(await run({ title: 'B1', milestone: '1.6.0' }));
+    assert.equal(ops('REST POST milestones').length, 2);
+    assert.notEqual((a.milestone as Json).number, (b.milestone as Json).number);
+  });
+
+  it('does not pass the milestone into the create mutation and sets it on the id of the new issue', async () => {
+    const { run, ops } = await setup();
+    const data = dataOf(await run({ title: 'X', milestone: '1.5.0', labels: [] }));
+    const create = ops('SymphonyCreateSubIssue');
+    assert.equal(create.length, 1);
+    assert.equal(Object.keys(create[0]?.variables ?? {}).some((k) => /milestone/i.test(k)), false);
+    const sets = ops('SymphonySetIssueMilestone');
+    assert.equal(sets.length, 1);
+    assert.equal(sets[0]?.variables.issueId, `I_new${String(data.number)}`);
+  });
+
+  it('keeps the issue and warns when the milestone lookup itself fails', async () => {
+    const { github, run, ops } = await setup();
+    github.overrides.set('SymphonyMilestones', () => ({ body: { data: null, errors: [{ message: 'lookup down' }] } }));
+    const data = dataOf(await run({ title: 'X', milestone: '1.5.0' }));
+    assert.equal(data.created, true);
+    assert.ok(Array.isArray(data.warnings) && data.warnings.length > 0);
+    assert.equal(ops('SymphonySetIssueMilestone').length, 0);
+    assert.equal(ops('REST POST milestones').length, 0, 'a failed lookup must not lead to a blind create (duplicate risk)');
+  });
+
+  it('keeps the issue and warns when the race winner of a 422 is closed by the second lookup', async () => {
+    const { github, run } = await setup();
+    let calls = 0;
+    github.overrides.set('SymphonyMilestones', () => {
+      calls++;
+      if (calls > 1) return undefined;
+      github.milestones.push({ ...open('1.5.0', 3), state: 'CLOSED' });
+      return { body: { data: { repository: { milestones: { nodes: [] } } } } };
+    });
+    const data = dataOf(await run({ title: 'X', milestone: '1.5.0' }));
+    assert.equal(data.created, true);
+    assert.ok(Array.isArray(data.warnings) && data.warnings.length > 0);
+  });
+
+  it('works together with blockers and labels in one call', async () => {
+    const { github, run, ops } = await setup();
+    github.milestones.push(open('1.5.0', 2));
+    const first = dataOf(await run({ title: 'First', milestone: '1.5.0' }));
+    const second = dataOf(await run({ title: 'Second', milestone: '1.5.0', blocked_by: [first.number] }));
+    assert.equal(second.created, true);
+    assert.equal((second.milestone as Json).number, 2);
+    assert.equal(ops('SymphonySetIssueMilestone').length, 2);
+  });
+
+  it('list_milestones returns title, number, state and url of every milestone and defaults to open', async () => {
+    const { github, run } = await setup();
+    void run;
+    github.milestones.push(open('1.5.0', 2), { ...open('1.4.0', 1), state: 'CLOSED' });
+    const tracker = adapter(github, { sub_issue_status: 'Human Review' });
+    const [issue] = await tracker.fetchIssuesByIds(['A']);
+    const tool = tracker.agentToolSpecs().find((t) => t.name === 'list_milestones');
+    assert.ok(tool);
+    const list = dataOf(await tool.execute({}, { issue: issue as Issue })).milestones as Json[];
+    assert.deepEqual(list, [{ title: '1.5.0', number: 2, state: 'OPEN', url: 'https://github.com/acme/app/milestone/2' }]);
+  });
+});
