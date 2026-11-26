@@ -329,6 +329,7 @@ Structure and contents: [Logs, transcripts and workspaces](usage.md#logs-transcr
 | `claude` | `/home/symphony/.claude` | Claude Code state |
 | `workspaces` | `/home/symphony/symphony-workspaces` | one clone per issue, plus pnpm's shared store `.pnpm-store` |
 | `composer-cache` | `/home/symphony/.cache/composer` | Composer cache, replaceable |
+| `npm-cache` | `/home/symphony/.npm` | npm's download cache, replaceable |
 | `brain` | `/home/symphony/brain` (also `/config/vault` in `obsidian`) | knowledge vault (`brain.enabled`) |
 | `obsidian-config` | `/config` (`obsidian` container) | Obsidian settings and desktop profile (profile `brain`) |
 
@@ -552,10 +553,11 @@ then `docker compose up -d`. `symphony` waits until both sidecars are healthy (`
   a foreign server. So the sidecar has a name of its own on the `ci` network; keep `SYMPHONY_MYSQL_HOST` on it.
 - **One run at a time:** the shipped `ci` and `prod-smoke` run through `checks/repo.sh --lock`, one run of each per
   repository at a time; parallel test suites on one host slow each other into their timeout.
-  `SYMPHONY_CHECK_LOCK_SCOPE=host` serialises them across repositories too, `SYMPHONY_CHECK_LOCK_WAIT_S` bounds the
+  `SYMPHONY_CHECK_LOCK_SCOPE=host` serialises them across repositories too, `host-all` lets only one of them run on the
+  host at a time (`ci` and `prod-smoke` share the lock), `SYMPHONY_CHECK_LOCK_WAIT_S` bounds the
   wait (see [repository checks](configuration.md#repository-checks-checksreposh)).
-- **Resources:** `dind` is limited to 4 GB, `mysql` to 3 GB including its tmpfs (`mem_limit`). Image builds need disk space in
-  `dind-data`.
+- **Resources:** `dind` is limited to 4 GB, `mysql` to 3 GB including its tmpfs (`SYMPHONY_DIND_MEM_LIMIT`,
+  `SYMPHONY_MYSQL_MEM_LIMIT`; CPUs see [Resource limits](#resource-limits)). Image builds need disk space in `dind-data`.
 
 Security: see [Security](#security) below; a privileged daemon is effectively root on the host for whoever reaches it.
 
@@ -598,14 +600,50 @@ watchdog's heartbeat (see [the watchdog docs](watchdog.md#status-on-the-dashboar
 
 ### Resource limits
 
-As a rule of thumb, each parallel agent (Claude Code, Composer, tests) needs about 1 CPU and 2 GB RAM. Use
-`SYMPHONY_MAX_CONCURRENT_AGENTS` to limit parallelism. Optionally, limit the container in `docker-compose.yml` (remove
-the comment characters):
+The AI work runs at Anthropic; the host carries what the agents run locally: `composer install`, npm, builds, the
+entry checks and, with the profile `ci`, the CI runs in `dind` with MySQL. As a rule of thumb each parallel agent needs
+about 1 CPU and 2 GB RAM, and one CI run can fill a small host on its own. Without limits one container can take the
+whole host, the NAS or hypervisor underneath included.
 
-```yaml
-cpus: 2
-mem_limit: 4g
-```
+Both compose files read the limits from `.env`; `0` means no limit, and a recreate (`docker compose up -d`) applies them:
+
+| Variable | Default | Container |
+|---|---|---|
+| `SYMPHONY_CPUS`, `SYMPHONY_MEM_LIMIT` | `0`, `0` | `symphony`: agents, their builds, the fast entry checks |
+| `SYMPHONY_DIND_CPUS`, `SYMPHONY_DIND_MEM_LIMIT` | `0`, `4g` | `dind` (profile `ci`): `ci` and `prod-smoke` |
+| `SYMPHONY_MYSQL_CPUS`, `SYMPHONY_MYSQL_MEM_LIMIT` | `0`, `3g` | `mysql` (profile `ci`); its 2 GB tmpfs counts against the memory |
+
+`cpus` above the CPUs of the host makes Docker refuse to start the container. The limits cap a container; they reserve
+nothing, so their sum may exceed the host as long as not everything peaks at once.
+
+What drives the load besides the limits:
+
+- `SYMPHONY_TEST_PARALLEL` sets the test processes of the fast entry checks (Testing, Agent review),
+  `SYMPHONY_CI_PARALLEL` those of the `ci` gate (unset: one process).
+- `SYMPHONY_CHECK_LOCK_SCOPE` decides how many `ci` and `prod-smoke` runs share the host (see
+  [one run at a time](#ci-sidecars-profile-ci)).
+- `agent.max_concurrent_agents` and the column limits and slot reservations of `WORKFLOW.md`: on the Tasks page of the
+  dashboard they can be changed at runtime, per host, without editing the file
+  ([Agent slots set on the dashboard](configuration.md#agent-slots-set-on-the-dashboard)). Every `Agent review` slot can
+  run the In review checks.
+- `SYMPHONY_DISPATCH_ORDER=column_first` finishes issues close to done before new ones start: fewer open workspaces.
+- Obsidian (profile `brain`) is a desktop in the browser and needs CPU and 1-2 GB RAM while it runs. The agents write
+  the vault without it, so it can stay off and start on demand: `docker compose up -d obsidian`, later
+  `docker compose stop obsidian`.
+
+Starting points (`.env`; the slots on the dashboard):
+
+| | Small host (3-4 threads, 12-16 GB) | Server (8 cores, 32 GB) |
+|---|---|---|
+| `SYMPHONY_CPUS` / `SYMPHONY_MEM_LIMIT` | `2` / `5g` | `4` / `10g` |
+| `SYMPHONY_DIND_CPUS` / `SYMPHONY_DIND_MEM_LIMIT` | `1.5` / `4g` | `3` / `6g` |
+| `SYMPHONY_MYSQL_CPUS` / `SYMPHONY_MYSQL_MEM_LIMIT` | `1` / `3g` | `2` / `3g` |
+| `SYMPHONY_TEST_PARALLEL` | `1` | `2` |
+| `SYMPHONY_CHECK_LOCK_SCOPE` | `host-all` | `host` |
+| `COMPOSE_PROFILES` | `ci,watchdog` (Obsidian on demand) | `ci,brain,watchdog` |
+| Agent slots / `Agent review` (dashboard) | 3-4 / 1 | 5 / 2 |
+
+Check the result with `docker stats` while agents run.
 
 ### PHP and mutation testing
 

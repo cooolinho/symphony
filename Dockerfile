@@ -133,7 +133,8 @@ RUN userdel --remove node \
         /home/symphony/brain \
         /home/symphony/.cache \
         /home/symphony/.cache/composer \
-        /home/symphony/.cache/corepack
+        /home/symphony/.cache/corepack \
+        /home/symphony/.npm
 
 # Claude Code keeps .claude.json in CLAUDE_CONFIG_DIR as well, so all its state lands in the volume.
 ENV CLAUDE_CONFIG_DIR=/home/symphony/.claude \
