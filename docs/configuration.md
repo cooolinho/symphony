@@ -249,7 +249,9 @@ without one it exits 78. First it requires a clean tree with everything pushed, 
 
 - `--lock` runs one check of that name per repository at a time (`flock`), for checks with fixed compose project
   names, ports or networks, and for heavy ones that slow each other into their timeout when they run side by side
-  (the shipped `ci` and `prod-smoke`). `SYMPHONY_CHECK_LOCK_SCOPE=host` makes it one per host, across repositories.
+  (the shipped `ci` and `prod-smoke`). `SYMPHONY_CHECK_LOCK_SCOPE=host` makes it one per host, across repositories;
+  `host-all` makes it one locked check of any name per host, so `ci` and `prod-smoke` of different issues never run
+  side by side either (for a host that one CI run fills).
   The wait is bounded so the run keeps its time: at most `SYMPHONY_CHECK_LOCK_WAIT_S` seconds (default `900`) and
   never more than half of the check's `timeout_ms`. A wait that ends without the lock exits **75** (busy): the check
   did not run, the agent ends its turn, and Symphony continues the issue after a backoff (see below).

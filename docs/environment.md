@@ -95,9 +95,9 @@ How many sub-issues a role may file per run.
 | `SYMPHONY_CI_TIMEOUT_MS` | `1200000` | Time limit of `ci`, including a wait for its lock; `ci` and `prod-smoke` together must stay below `claude.turn_timeout_ms` (1 h). |
 | `SYMPHONY_SMOKE_TIMEOUT_MS` | `1800000` | Time limit of `prod-smoke`. |
 | `SYMPHONY_CHECK_LOCK_WAIT_S` | `900` | `checks/repo.sh --lock` (`ci`, `prod-smoke`): how long a run waits for another run of the same check; never more than half its time limit. Then it exits 75 (busy) and the issue continues after a backoff, see [repository checks](configuration.md#repository-checks-checksreposh). |
-| `SYMPHONY_CHECK_LOCK_SCOPE` | `repository` | `host`: one run of each locked check on the whole host, across repositories, for a host whose CPUs several CI runs overload. |
-| `SYMPHONY_TEST_PARALLEL` | – | Fast entry checks (Testing, Agent review): `php artisan test` in n processes if `vendor/bin/paratest` exists (installs nothing; a composer `test` script wins). |
-| `SYMPHONY_CI_PARALLEL` | – | The same for `checks/laravel.sh --full` (the `ci` gate); `--full` installs a paratest the project requires. |
+| `SYMPHONY_CHECK_LOCK_SCOPE` | `repository` | `host`: one run of each locked check on the whole host, across repositories, for a host whose CPUs several CI runs overload. `host-all`: one locked check of any name on the whole host (`ci` and `prod-smoke` share the lock), for a host that one CI run fills; more runs then end busy and continue after a backoff. |
+| `SYMPHONY_TEST_PARALLEL` | – | Fast entry checks (Testing, Agent review) only, not the `ci` gate: `php artisan test` in n processes if `vendor/bin/paratest` exists (installs nothing; a composer `test` script wins). |
+| `SYMPHONY_CI_PARALLEL` | – | The same for `checks/laravel.sh --full` (the `ci` gate); unset, it tests in one process. `--full` installs a paratest the project requires. |
 | `SYMPHONY_CI_DB` | – | `mysql`: `checks/laravel.sh --full` runs the tests against a MySQL database of its own (`SYMPHONY_MYSQL_*`), dropped afterwards. |
 | `SYMPHONY_LARAVEL_APP_PATH` | the current directory | App directory for `checks/laravel.sh` in a repository with several Laravel apps. |
 
@@ -126,6 +126,20 @@ Not needed without Docker. See [docs/docker.md](docker.md). The SSH deploy key g
 | `WITH_DOCKER_CLI` | `true` | `false`: image without docker CLI, compose and buildx (no `ci` profile checks). |
 | `TZ` | `Europe/Berlin` | Time zone of the container. |
 | `PLAYWRIGHT_BROWSERS_PATH` | `/opt/ms-playwright` (image) | Where the image keeps headless Chromium; set by the `Dockerfile`, not in `.env`. |
+
+### Resource limits
+
+Both compose files read them; `0` means no limit. A recreate applies them (`docker compose up -d`). `cpus` above the
+CPUs of the host makes Docker refuse to start the container. Sizes per host: [Resource limits](docker.md#resource-limits).
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SYMPHONY_CPUS` | `0` | CPUs of the `symphony` container (its agents, their builds and the fast entry checks), e.g. `2` or `1.5`. |
+| `SYMPHONY_MEM_LIMIT` | `0` | Memory of the `symphony` container, e.g. `6g`. About 2 GB per agent slot. |
+| `SYMPHONY_DIND_CPUS` | `0` | CPUs of the `dind` sidecar (profile `ci`): image builds and containers of `ci` and `prod-smoke`. |
+| `SYMPHONY_DIND_MEM_LIMIT` | `4g` | Memory of the `dind` sidecar. |
+| `SYMPHONY_MYSQL_CPUS` | `0` | CPUs of the CI MySQL (profile `ci`). |
+| `SYMPHONY_MYSQL_MEM_LIMIT` | `3g` | Memory of the CI MySQL; its 2 GB tmpfs counts against it, so keep it above the buffer pool (512 MB) plus the data. |
 
 ### Traefik (docker-compose.yml)
 
