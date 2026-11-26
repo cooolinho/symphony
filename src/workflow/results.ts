@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { CheckRecord } from '../orchestrator/guard.ts';
 import { SymphonyError } from '../util/errors.ts';
+import { CRITERION_STATUSES, criterionKey } from './criteria.ts';
 
 /**
  * Result contracts: every agent stage reports a typed, versioned result. Symphony renders it as an issue comment
@@ -147,6 +148,15 @@ const categorySchema = z
   .max(CATEGORY_MAX)
   .regex(CATEGORY_PATTERN, 'must be a kebab-case slug (lowercase letters, digits, single hyphens)');
 
+const criterionVerdictSchema = z
+  .object({
+    criterion: text().describe('The acceptance criterion, copied verbatim from the list in your prompt'),
+    status: z.enum(CRITERION_STATUSES).describe('met = proven; unmet = not fulfilled; manual = only a human can check it (production, real devices, third-party systems)'),
+    evidence: text(1000).optional().describe('Required for "met": the test that passed, the command with an excerpt of its output or the screenshot; say so when only reading the code was possible'),
+    reason: text(1000).optional().describe('Required for "manual": why an agent cannot check it; for "unmet": what is missing'),
+  })
+  .strict();
+
 const findingSchema = z.object({
   severity: z.enum(SEVERITIES).describe('blocker and major must be fixed before approval; minor and nit are optional'),
   category: categorySchema
@@ -193,6 +203,7 @@ const kindShapes = {
     complexity: z.enum(COMPLEXITIES).optional().describe('S, M, L or XL; becomes the issue\'s Complexity: label when it has none'),
     components: list(text(NAME_MAX)).describe('Affected modules, directories or services'),
     acceptance_criteria: list(text()),
+    added_criteria: list(text()).describe('Criteria the issue body does not state as checkboxes yet (new ones and checkable versions of vague ones); Symphony appends them to the body, replacing the ones it appended before'),
     risks: z
       .object({
         security: z.boolean().optional(),
@@ -235,6 +246,7 @@ const kindShapes = {
     findings: list(findingSchema).describe('"approved" allows only minor and nit findings'),
     refuted: list(refutedFindingSchema).describe('Candidates the verification refuted; not posted, counted for the evaluation'),
     checked: list(text()).describe('What the review covered'),
+    criteria: list(criterionVerdictSchema).describe('One entry per acceptance criterion of the issue; Symphony ticks the boxes in the issue body from it. "approved" allows no "unmet"'),
     confirmed_goals: list(text()).describe('Refactor issues: the analysis\'s refactoring goals this review confirmed, copied verbatim; "approved" needs every one'),
     lessons: list(text(NAME_MAX)).describe('Vault paths of the lessons written, appended to or already covering the recurring finding categories of this review'),
   },
@@ -408,6 +420,8 @@ const isSevere = (finding: Finding) => finding.severity === 'blocker' || finding
 
 /** Facts about the issue that some consistency rules need; Symphony derives them, the agent never sets them. */
 export interface ResultContext {
+  /** The issue's acceptance criteria; a review has to judge each one. Empty or absent switches the coverage rule off. */
+  acceptanceCriteria?: readonly string[];
   /** Refactoring goals of the analysis when the issue is a refactor; empty (or absent) switches the goal rule off. */
   refactoringGoals?: readonly string[];
   /**
@@ -450,7 +464,36 @@ export interface SplitContext {
   maxSubIssues: number | null;
 }
 
-const goalKey = (goal: string) => goal.trim().replace(/\s+/g, ' ').toLowerCase();
+const goalKey = criterionKey;
+
+const quoted = (values: readonly string[]) => values.map((value) => `"${inline(value)}"`).join(', ');
+
+/** The rules of a review's `criteria`: proof per entry, and with the context one entry for every criterion of the issue. */
+function criteriaProblems(result: ResultOf<'review'>, expected: readonly string[]): string[] {
+  const problems: string[] = [];
+  const seen = new Set<string>();
+  for (const [index, entry] of result.criteria.entries()) {
+    const label = `criteria[${index}] ("${inline(entry.criterion).slice(0, 80)}")`;
+    if (entry.status === 'met' && entry.evidence === undefined) {
+      problems.push(`${label} is "met" without \`evidence\`: name the passing test, the command with its output or the screenshot`);
+    }
+    if (entry.status === 'manual' && entry.reason === undefined) problems.push(`${label} is "manual" without \`reason\`: say why an agent cannot check it`);
+    const key = goalKey(entry.criterion);
+    if (seen.has(key)) problems.push(`${label} is listed twice`);
+    seen.add(key);
+  }
+  const unmet = result.criteria.filter((entry) => entry.status === 'unmet').map((entry) => entry.criterion);
+  if (result.verdict === 'approved' && unmet.length > 0) {
+    problems.push(`verdict "approved" allows no "unmet" criterion: ${quoted(unmet)}. Prove each one or use "changes_needed" with a finding`);
+  }
+  if (result.verdict === 'blocked' || expected.length === 0) return problems;
+  const missing = expected.filter((criterion) => !seen.has(goalKey(criterion)));
+  if (missing.length > 0) problems.push(`\`criteria\` needs one entry per acceptance criterion (copied verbatim); missing: ${quoted(missing)}`);
+  const known = new Set(expected.map(goalKey));
+  const unknown = result.criteria.filter((entry) => !known.has(goalKey(entry.criterion))).map((entry) => entry.criterion);
+  if (unknown.length > 0) problems.push(`\`criteria\` has entries that are no acceptance criterion of the issue: ${quoted(unknown)}. Copy the criteria verbatim`);
+  return problems;
+}
 
 /**
  * The rules of a `split` design: at least two work packages, and with the context an issue of complexity XL that is not
@@ -562,6 +605,7 @@ export function consistencyProblems(result: StageResult, context: ResultContext 
       if (result.verdict === dirty && result.findings.length === 0) {
         problems.push(`verdict "${dirty}" needs at least one entry in \`findings\``);
       }
+      if (result.kind === 'review') problems.push(...criteriaProblems(result, context.acceptanceCriteria ?? []));
       if (result.kind === 'review' && result.verdict === 'approved') {
         const confirmed = new Set(result.confirmed_goals.map(goalKey));
         const missing = (context.refactoringGoals ?? []).filter((goal) => !confirmed.has(goalKey(goal)));
@@ -834,6 +878,13 @@ function panelLine(votes: readonly PanelVote[] | undefined): string {
   return `\n  Panel: ${parts.join(' · ')}`;
 }
 
+const CRITERION_ICONS = { met: '✅', unmet: '❌', manual: '👤' } as const;
+
+function criterionLine(entry: ResultOf<'review'>['criteria'][number]): string {
+  const detail = entry.status === 'met' ? entry.evidence : (entry.reason ?? entry.evidence);
+  return `${CRITERION_ICONS[entry.status]} ${inline(entry.criterion)}${detail === undefined ? '' : ` — ${inline(detail)}`}`;
+}
+
 function findingLines(findings: readonly Finding[], omitted: number | undefined, refuted = 0): string | null {
   const items = findings.map((finding) => {
     const location = finding.file === undefined ? '' : ` ${code(finding.line === undefined ? finding.file : `${finding.file}:${finding.line}`)}`;
@@ -863,6 +914,7 @@ function kindSections(result: StageResult): (string | null)[] {
         facts.length === 0 ? null : facts.join(' · '),
         bullets('Components', result.components.map(code)),
         bullets('Acceptance criteria', result.acceptance_criteria.map((c) => `[ ] ${inline(c)}`)),
+        bullets('Added to the issue', (result.added_criteria ?? []).map(inline)),
         risks.length === 0 ? null : `**Risks:** ${risks.join(', ')}`,
         bullets('Open questions', result.open_questions.map(inline)),
         bullets('Plan', result.plan.map(inline), true),
@@ -907,7 +959,7 @@ function kindSections(result: StageResult): (string | null)[] {
         result.mutation_problem === undefined ? null : `**Mutation testing problem**\n${block(result.mutation_problem)}`,
       ];
     case 'review':
-      return [findingLines(result.findings, result.omitted_findings, result.refuted.length + (result.omitted_refuted ?? 0)), bullets('Checked', result.checked.map(inline)), bullets('Confirmed goals', result.confirmed_goals.map(inline)), bullets('Lessons', (result.lessons ?? []).map(code))];
+      return [bullets('Akzeptanzkriterien', (result.criteria ?? []).map(criterionLine)), findingLines(result.findings, result.omitted_findings, result.refuted.length + (result.omitted_refuted ?? 0)), bullets('Checked', result.checked.map(inline)), bullets('Confirmed goals', result.confirmed_goals.map(inline)), bullets('Lessons', (result.lessons ?? []).map(code))];
     case 'security':
       return [findingLines(result.findings, result.omitted_findings, result.refuted.length + (result.omitted_refuted ?? 0)), bullets('Lessons', (result.lessons ?? []).map(code))];
     case 'docs':

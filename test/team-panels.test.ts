@@ -4,8 +4,8 @@ import { AGENT_HTML } from '../src/http/issue-page.ts';
 import { renderPage, until } from './helpers.ts';
 import { changeEntry, issueDetail, scoreTeam } from './helpers/page-fixtures.ts';
 
-// E3-8 (#387): the row of four panels below the columns of the team view (Ergebnisse, Context-Verlauf, Brain-Zugriffe,
-// Changes) after the mockup. The page runs in the fake DOM; what the user sees is asserted.
+// E3-8 (#387): the row of panels below the columns of the team view (Ergebnisse, Context-Verlauf, Brain-Zugriffe,
+// Changes after the mockup; Akzeptanzkriterien before them). The page runs in the fake DOM; what the user sees is asserted.
 
 const opts = { url: 'http://127.0.0.1/issue?id=acme%2Fapp%231' };
 type Page = ReturnType<typeof renderPage>;
@@ -13,11 +13,11 @@ const session = (run: string, over: Record<string, unknown> = {}) => ({ run, att
 const result = (role: string, kind: string, verdict: string, round: number | null, summary: string) => ({ role, kind, verdict, round, target: 'In progress', summary, created_at: '2026-10-30T11:00:00Z', url: null, findings: [], blockers: [] });
 
 describe('panel row (#387)', () => {
-  it('puts the four panels as glass sections into one wrapping row after the columns', () => {
+  it('puts the five panels as glass sections into one wrapping row after the columns', () => {
     const page = renderPage(AGENT_HTML, { detail: issueDetail() }, opts);
     const row = page.$('panel-row');
     assert.deepEqual(row.children.map((c) => [c.tagName.toLowerCase(), c.id, c.classList.contains('g')]), [
-      ['section', 'results-section', true], ['section', 'ctx-history', true], ['section', 'access-section', true], ['section', 'changes-section', true],
+      ['section', 'criteria-section', true], ['section', 'results-section', true], ['section', 'ctx-history', true], ['section', 'access-section', true], ['section', 'changes-section', true],
     ]);
     assert.ok(AGENT_HTML.indexOf('class="cols"') < AGENT_HTML.indexOf('id="panel-row"'));
     assert.match(AGENT_HTML, /\.panel-row \{ display: flex; flex-wrap: wrap; gap: 18px;/);

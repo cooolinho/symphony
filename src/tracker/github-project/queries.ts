@@ -198,6 +198,14 @@ export const ADD_COMMENT_MUTATION = /* GraphQL */ `
   }
 `;
 
+export const UPDATE_ISSUE_BODY_MUTATION = /* GraphQL */ `
+  mutation SymphonyUpdateIssueBody($issueId: ID!, $body: String!) {
+    updateIssue(input: { id: $issueId, body: $body }) {
+      issue { id }
+    }
+  }
+`;
+
 export const CREATE_PULL_REQUEST_MUTATION = /* GraphQL */ `
   mutation SymphonyCreatePullRequest($repositoryId: ID!, $base: String!, $head: String!, $title: String!, $body: String, $draft: Boolean) {
     createPullRequest(

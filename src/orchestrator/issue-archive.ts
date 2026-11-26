@@ -4,7 +4,7 @@ import type { Logger } from '../log.ts';
 import { errorMessage } from '../util/errors.ts';
 import type { TimelineEvent } from './orchestrator.ts';
 import type { PipelineStage } from './pipeline.ts';
-import type { ResultRow } from './stage-history.ts';
+import type { CriterionRow, ResultRow } from './stage-history.ts';
 
 /**
  * The debugging context of a finished issue claim, as the orchestrator kept it while the issue was claimed:
@@ -50,6 +50,8 @@ export interface ArchivedIssue {
   }>;
   /** The issue's stage results (see {@link ResultRow}); empty in archives from before the multi-agent pipeline. */
   results: ResultRow[];
+  /** Acceptance criteria with their verdicts when the issue was archived; absent in older archives. */
+  criteria?: CriterionRow[];
   run_trace: Record<string, unknown> | null;
   last_check: Record<string, unknown> | null;
   /** Workflow profile of the issue when it was archived; absent in older archives. */

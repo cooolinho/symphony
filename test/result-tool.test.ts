@@ -1242,6 +1242,84 @@ describe('report_result of a refactor review', () => {
   });
 });
 
+describe('report_result: acceptance criteria in the issue body', () => {
+  const BODY = 'Text\n\n## Acceptance criteria\n- [ ] one\n- [ ] two\n';
+  const verdicts = [
+    { criterion: 'one', status: 'met', evidence: 'node --test: 3 passed' },
+    { criterion: 'two', status: 'manual', reason: 'needs production' },
+  ];
+
+  function withBody(options: SetupOptions = {}, body: string | null = BODY) {
+    const ctx = setup(options);
+    ctx.tracker.set('1', { description: body });
+    return ctx;
+  }
+
+  it('ticks the boxes before it moves the issue', async () => {
+    const { tracker, report } = withBody();
+    const order: string[] = [];
+    const update = tracker.updateIssueBody.bind(tracker);
+    tracker.updateIssueBody = async (issue, next) => {
+      order.push('body');
+      return update(issue, next);
+    };
+    tracker.autoMerge = () => {
+      order.push('move');
+      return undefined;
+    };
+    const result = data(await report({ ...APPROVED, criteria: verdicts }));
+    assert.deepEqual(order, ['body', 'move']);
+    assert.equal(result.criteria_ticked, '1/2');
+    assert.match(tracker.bodyUpdates[0] ?? '', /- \[x\] one <!-- symphony:ac --> <sub>✅ R1 · Beleg: node --test: 3 passed · \[Review\]\(https:/);
+    assert.match(tracker.bodyUpdates[0] ?? '', /- \[ \] two <!-- symphony:ac --> <sub>👤 manuell prüfen R1/);
+  });
+
+  it('refuses an approval that skips a criterion or leaves one unmet, and edits nothing', async () => {
+    const { tracker, report } = withBody();
+    assert.match(error(await report(APPROVED)).message, /missing: "one", "two"/);
+    const unmet = [verdicts[0], { criterion: 'two', status: 'unmet' }];
+    assert.match(error(await report({ ...APPROVED, criteria: unmet })).message, /allows no "unmet" criterion/);
+    assert.deepEqual(tracker.bodyUpdates, []);
+    assert.deepEqual(tracker.statusCalls, []);
+  });
+
+  it('ticks what is met on changes_needed too', async () => {
+    const { tracker, report } = withBody();
+    data(await report({ ...CHANGES, criteria: [verdicts[0], { criterion: 'two', status: 'unmet', reason: 'no test' }] }));
+    assert.match(tracker.bodyUpdates[0] ?? '', /- \[x\] one [\s\S]*- \[ \] two .*❌ R1 · no test/);
+  });
+
+  it('records and moves with a warning when the body cannot be written', async () => {
+    const { tracker, report } = withBody();
+    tracker.failBodyUpdate = new Error('no permission');
+    const result = data(await report({ ...APPROVED, criteria: verdicts }));
+    assert.match(String(result.warnings), /acceptance criteria in the issue body failed: no permission/);
+    assert.equal(tracker.statusCalls.length, 1);
+  });
+
+  it('never edits the body with tick_criteria off', async () => {
+    const ctx = withBody();
+    ctx.params.config.pipeline.tickCriteria = false;
+    data(await ctx.report({ ...APPROVED, criteria: verdicts }));
+    assert.deepEqual(ctx.tracker.bodyUpdates, []);
+  });
+
+  it('appends the added criteria of an analysis', async () => {
+    const { tracker, report } = withBody({ role: 'analyst', state: 'Ready' });
+    data(await report({ verdict: 'ready', summary: 's', acceptance_criteria: ['one', 'two', 'three'], added_criteria: ['three'] }));
+    assert.match(tracker.bodyUpdates[0] ?? '', /- \[ \] two\n\n<!-- symphony:criteria:start -->\n### .*\n\n- \[ \] three\n<!-- symphony:criteria:end -->/);
+  });
+
+  it('gives an issue without checkboxes all criteria of the analysis, and nothing on needs_info', async () => {
+    const asked = withBody({ role: 'analyst', state: 'Ready' }, 'A bug.');
+    data(await asked.report({ verdict: 'needs_info', summary: 's', open_questions: ['which?'], added_criteria: ['x'] }));
+    assert.deepEqual(asked.tracker.bodyUpdates, []);
+    const ready = withBody({ role: 'analyst', state: 'Ready' }, 'A bug.');
+    data(await ready.report({ verdict: 'ready', summary: 's', acceptance_criteria: ['no crash'] }));
+    assert.match(ready.tracker.bodyUpdates[0] ?? '', /^A bug\.\n\n<!-- symphony:criteria:start -->[\s\S]*- \[ \] no crash/);
+  });
+});
+
 describe('report_result description: JSON hint', () => {
   it('names every escaping rule from the issue and keeps the original wording of the description', () => {
     const { unguarded } = setup();

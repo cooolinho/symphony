@@ -190,10 +190,11 @@ ${steps}
 
 function reviewerSection(issue: PipelineIssue): string {
   const rejected = find(issue, 'review', 'changes_needed');
-  const approvedCall = `Call \`report_result\` with the verdict \`approved\`, the summary \`${find(issue, 'review', 'approved')?.marker}\` and no findings. End the turn.`;
+  const criteria = (status: string, field: string) => `exactly one entry in \`criteria\`: criterion \`E2E: nothing to implement\`, status \`${status}\`, ${field} \`E2E: scripted\``;
+  const approvedCall = `Call \`report_result\` with the verdict \`approved\`, the summary \`${find(issue, 'review', 'approved')?.marker}\`, no findings and ${criteria('met', 'evidence')}. End the turn.`;
   const steps =
     rejected !== undefined
-      ? `2. Look at the review round in your prompt. In round 1 call \`report_result\` with the verdict \`changes_needed\`, the summary \`${rejected.marker}\` and exactly one finding: severity \`major\`, file \`README.md\`, line 1, problem \`E2E: this finding is part of the test\`, fix \`none needed\`. End the turn.
+      ? `2. Look at the review round in your prompt. In round 1 call \`report_result\` with the verdict \`changes_needed\`, the summary \`${rejected.marker}\` and exactly one finding: severity \`major\`, file \`README.md\`, line 1, problem \`E2E: this finding is part of the test\`, fix \`none needed\`, and ${criteria('unmet', 'reason')}. End the turn.
 3. In any later round: ${approvedCall}`
       : `2. ${approvedCall}`;
   return `## Role \`${PIPELINE_ROLE.reviewer}\` (status "${PIPELINE_STATUS.review}")
