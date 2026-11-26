@@ -6,7 +6,8 @@
 #   repo.sh [--lock] <name> [-- fallback command…]
 #
 # --lock runs one check of this name per repository at a time (fixed compose projects, ports and networks);
-# SYMPHONY_CHECK_LOCK_SCOPE=host makes it one per host, across repositories. It waits at most
+# SYMPHONY_CHECK_LOCK_SCOPE=host makes it one per host, across repositories, and host-all one locked check of any
+# name per host (ci and prod-smoke share the lock), for a host whose CPUs one CI run fills. It waits at most
 # SYMPHONY_CHECK_LOCK_WAIT_S seconds (default 900), never more than half of the check's SYMPHONY_CHECK_TIMEOUT_MS,
 # so the run keeps the other half; when the wait ends without the lock it exits 75 (busy: Symphony retries later).
 # With SYMPHONY_CI_DOCKER_HOST (compose profile "ci") it sets DOCKER_HOST, DOCKER_TLS_VERIFY and DOCKER_CERT_PATH for
@@ -67,7 +68,8 @@ if $lock; then
       lockfile="$locks/${repository//\//_}-$name.lock"
       ;;
     host) lockfile="$locks/host-$name.lock" ;;
-    *) env_problem "SYMPHONY_CHECK_LOCK_SCOPE must be repository or host, not ${SYMPHONY_CHECK_LOCK_SCOPE}" ;;
+    host-all) lockfile="$locks/host-all.lock" ;;
+    *) env_problem "SYMPHONY_CHECK_LOCK_SCOPE must be repository, host or host-all, not ${SYMPHONY_CHECK_LOCK_SCOPE}" ;;
   esac
   wait_s=${SYMPHONY_CHECK_LOCK_WAIT_S:-900}
   [[ "$wait_s" =~ ^[0-9]+$ ]] || env_problem "SYMPHONY_CHECK_LOCK_WAIT_S must be whole seconds, not $wait_s"

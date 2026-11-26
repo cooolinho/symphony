@@ -74,7 +74,7 @@ describe('docker compose: profile ci', () => {
           assert.match(dind, new RegExp(`- ${v}$`, 'm'));
         }
         assert.match(dind, /test: \["CMD", "docker", "info"\]/);
-        assert.match(dind, /mem_limit: 4g/);
+        assert.match(dind, /mem_limit: \$\{SYMPHONY_DIND_MEM_LIMIT:-4g\}/);
       });
 
       it('mounts the workspaces volume into dind at the same path as in symphony', () => {
@@ -102,7 +102,7 @@ describe('docker compose: profile ci', () => {
         assert.match(mysql, /tmpfs:\n\s+- \/var\/lib\/mysql:size=2g,uid=999,gid=999\n/, 'test databases in memory');
         assert.doesNotMatch(read(file), /ci-mysql:\/var\/lib\/mysql/);
         assert.match(mysql, /mysqladmin", "ping"/);
-        assert.match(mysql, /mem_limit: 3g/);
+        assert.match(mysql, /mem_limit: \$\{SYMPHONY_MYSQL_MEM_LIMIT:-3g\}/);
         // compose interpolates services of inactive profiles too: a :? here would break every setup without ci.
         assert.doesNotMatch(read(file), /\$\{(SYMPHONY_CI_|SYMPHONY_MYSQL_)\w*:\?/);
       });
