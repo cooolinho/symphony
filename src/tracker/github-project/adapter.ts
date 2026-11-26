@@ -47,6 +47,7 @@ import {
 } from './normalize.ts';
 import {
   ADD_COMMENT_MUTATION,
+  UPDATE_ISSUE_BODY_MUTATION,
   ADD_LABELS_MUTATION,
   BRANCH_PULL_REQUEST_QUERY,
   CLOSE_ISSUE_MUTATION,
@@ -66,6 +67,7 @@ import {
 import { KIND, type GithubProjectSettings } from './settings.ts';
 import { actionsJobOf, withJobLogs } from './job-logs.ts';
 import { publishRelease, releaseReport, type ReleaseRequest, type ReleaseResult } from './release.ts';
+import { createMilestone, type MilestoneRef } from './milestones.ts';
 import { postCommitStatus } from './statuses.ts';
 import { createGithubTools } from './tools.ts';
 
@@ -360,6 +362,12 @@ export class GithubProjectAdapter implements TrackerAdapter {
     return { url: typeof url === 'string' ? url : null };
   }
 
+  async updateIssueBody(issue: Issue, body: string): Promise<void> {
+    const ref = this.#requireRef(issue, 'edit');
+    const response = await this.client.request<Json>(UPDATE_ISSUE_BODY_MUTATION, { issueId: ref.issueId, body });
+    assertNoGraphqlErrors(response.errors);
+  }
+
   /**
    * The parent chain of the issue (parent, its parent, …), read fresh: at most `maxDepth` levels, and it ends at the
    * root or at the first parent that lives in another repository.
@@ -560,6 +568,11 @@ export class GithubProjectAdapter implements TrackerAdapter {
       warnings.push(`could not move the release issue to "${settings.doneState}": ${errorMessage(error)}`);
     }
     return { ...result, issue_status: status, ...(warnings.length > 0 ? { warnings } : {}) };
+  }
+
+  /** Creates a milestone (REST; GraphQL has no mutation for it). 'exists' when GitHub answers 422 already_exists. */
+  async createMilestone(repository: string, title: string): Promise<MilestoneRef | 'exists'> {
+    return createMilestone({ fetch: (...args) => this.#fetch(...args), endpoint: this.settings.endpoint, token: this.settings.token, timeoutMs: this.settings.requestTimeoutMs }, repository, title);
   }
 
   async reportCheckStatus(issue: Issue, status: CheckStatus): Promise<void> {

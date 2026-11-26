@@ -325,6 +325,8 @@ export interface TrackerAdapter {
   viewerLogin?(): Promise<string>;
   /** Posts a Markdown comment on the issue and returns its URL. */
   postComment?(issue: Issue, body: string): Promise<PostedComment>;
+  /** Replaces the issue's description (the ticks of the acceptance criteria); absent = the tracker cannot edit it. */
+  updateIssueBody?(issue: Issue, body: string): Promise<void>;
   /**
    * Moves the issue to a column (matched case-insensitively), the same operation as the `set_status` tool, including
    * `auto_merge`. Throws `invalid_argument` for a column the board does not have.

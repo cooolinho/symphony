@@ -67,6 +67,8 @@ function inputFrom(clause: string): Record<string, unknown> {
   if (caseMatch !== null) input.cases = [{ criterion: caseMatch[1], test: caseMatch[2], status: caseMatch[3] }];
   const finding = clause.match(/finding: severity `(\w+)`, file `([^`]+)`, line (\d+), problem `([^`]+)`, fix `([^`]+)`/);
   if (finding !== null) input.findings = [{ severity: finding[1], file: finding[2], line: Number(finding[3]), problem: finding[4], fix: finding[5] }];
+  const judged = clause.match(/entry in `criteria`: criterion `([^`]+)`, status `(\w+)`, (evidence|reason) `([^`]+)`/);
+  if (judged !== null) input.criteria = [{ criterion: judged[1], status: judged[2], [judged[3] as string]: judged[4] }];
   return input;
 }
 

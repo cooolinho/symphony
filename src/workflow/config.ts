@@ -15,6 +15,7 @@ import { DEFAULT_PROFILE, type WorkflowProfile } from './profile.ts';
 import { Reader, parseInteger } from './reader.ts';
 import { BRAIN_MODES, NEXT_STAGE, resultTargets, type BrainMode, type EffortLabelPolicy, type ModelLabelPolicy, type RoleClaudeOverrides, type RoleConfig } from './roles.ts';
 import { AGENT_RESULT_KINDS, isLoopKind, LOOP_VERDICTS, RESULT_VERDICTS, SPLIT_VERDICT, type AgentResultKind } from './results.ts';
+import { DEFAULT_CRITERIA_HEADINGS } from './criteria.ts';
 
 export interface TrackerConfig {
   kind: string | null;
@@ -149,6 +150,10 @@ export interface PipelineConfig {
   maxCheckFailures: number;
   /** Label put on an issue that hit a round limit. */
   limitLabel: string;
+  /** Headings of an issue body whose checkbox lines are the issue's acceptance criteria (any level, case-insensitive). */
+  criteriaHeadings: string[];
+  /** Whether Symphony edits the issue body: appends the analysis's added criteria and ticks them after a review. */
+  tickCriteria: boolean;
   /** Issue label (normalized: trimmed, lowercase) → change type. */
   typeLabels: ReadonlyMap<string, string>;
   /** Type of an issue without a label in `typeLabels`. */
@@ -411,6 +416,8 @@ const PIPELINE_KEYS = new Set([
   'max_security_rounds',
   'max_check_failures',
   'limit_label',
+  'criteria_headings',
+  'tick_criteria',
   'type_labels',
   'default_type',
   'analysis',
@@ -656,6 +663,8 @@ function readPipeline(reader: Reader, raw: Record<string, unknown>, roles: RoleC
     maxSecurityRounds: reader.int(section, 'max_security_rounds', 'pipeline.max_security_rounds', DEFAULTS.maxSecurityRounds, 1),
     maxCheckFailures: reader.int(section, 'max_check_failures', 'pipeline.max_check_failures', DEFAULTS.maxCheckFailures, 1),
     limitLabel: nonEmpty('limit_label', DEFAULTS.pipelineLimitLabel),
+    criteriaHeadings: reader.stringList(section, 'criteria_headings', 'pipeline.criteria_headings')?.map((heading) => heading.trim()) ?? [...DEFAULT_CRITERIA_HEADINGS],
+    tickCriteria: reader.bool(section, 'tick_criteria', 'pipeline.tick_criteria', true),
     typeLabels,
     defaultType: nonEmpty('default_type', DEFAULTS.pipelineDefaultType),
     analysis,

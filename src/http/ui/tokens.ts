@@ -28,6 +28,9 @@ const taskVars = Object.entries(TASK_TONES).map(([k, t]) => `--task-${k}: ${t.fg
 
 export const TOKENS_CSS = `
   :root {
+    /* Side margin of the shell (full width, no max-width); 12px at <= 640px. */
+    --edge: 16px;
+    --read-width: 120ch; /* Lesebreite für Fließtext innerhalb von Karten; Karten und Seite bleiben voll breit */
     --bg: #070b16; --bg-2: #0a1020; --panel: #111a2c; --panel-2: #152036; --raise: #1a2640;
     --line: rgba(148, 163, 184, .14); --line-2: rgba(148, 163, 184, .24);
     /* Text, links (mockup values). Legacy names below map onto them. */
@@ -155,7 +158,7 @@ export const TOKENS_CSS = `
   .int-icon.dim { filter: grayscale(1); opacity: .45; }
 
   /* Layout */
-  main { max-width: 1480px; margin: 0 auto; padding: 20px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; }
+  main { padding: 20px var(--edge); display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; }
   section, .panel { background: linear-gradient(180deg, rgba(21, 32, 54, .78), rgba(17, 26, 44, .78)); border: 1px solid var(--line);
     border-radius: var(--radius); padding: 16px; min-width: 0; box-shadow: var(--shadow); }
   .section-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; margin-bottom: 14px; }
@@ -197,7 +200,7 @@ export const TOKENS_CSS = `
   ${COMPONENTS_CSS}
 
   @media (max-width: 640px) {
-    main { padding-left: 12px; padding-right: 12px; }
+    :root { --edge: 12px; }
     main { gap: 14px; }
     section, .panel { padding: 13px; }
     .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }

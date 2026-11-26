@@ -249,7 +249,9 @@ without one it exits 78. First it requires a clean tree with everything pushed, 
 
 - `--lock` runs one check of that name per repository at a time (`flock`), for checks with fixed compose project
   names, ports or networks, and for heavy ones that slow each other into their timeout when they run side by side
-  (the shipped `ci` and `prod-smoke`). `SYMPHONY_CHECK_LOCK_SCOPE=host` makes it one per host, across repositories.
+  (the shipped `ci` and `prod-smoke`). `SYMPHONY_CHECK_LOCK_SCOPE=host` makes it one per host, across repositories;
+  `host-all` makes it one locked check of any name per host, so `ci` and `prod-smoke` of different issues never run
+  side by side either (for a host that one CI run fills).
   The wait is bounded so the run keeps its time: at most `SYMPHONY_CHECK_LOCK_WAIT_S` seconds (default `900`) and
   never more than half of the check's `timeout_ms`. A wait that ends without the lock exits **75** (busy): the check
   did not run, the agent ends its turn, and Symphony continues the issue after a backoff (see below).
@@ -1179,6 +1181,8 @@ like everywhere else (an unset variable counts as omitted). Unknown keys are ign
 | `max_security_rounds` | `2` | Integer >= 1. Security review rounds (`issues_found` → developer fixes) before the issue goes to a human. |
 | `max_check_failures` | `3` | Integer >= 1. Hand-offs per issue that went to a role's `on_check_failed` (the entry check of the column failed) before the issue goes to a human. |
 | `limit_label` | `needs-human` | Label for an issue that hit a round limit or `max_check_failures`. |
+| `criteria_headings` | `["Acceptance criteria", "Akzeptanzkriterien"]` | Headings of an issue body (any level, case-insensitive) whose checkbox lines are its [acceptance criteria](results.md#acceptance-criteria). |
+| `tick_criteria` | `true` | Symphony appends the analysis's added criteria to the issue body and ticks the boxes after each review. `false` never edits an issue body. |
 | `type_labels` | `{}` | Map of issue label → change type, e.g. `{ bug: bug, enhancement: feature }` (labels are matched case-insensitively). |
 | `default_type` | `feature` | Type of an issue without a label in `type_labels`. |
 | `analysis` | `always` | `always` or `when_unlabeled`. With `when_unlabeled`, the analysis stage (the role whose `result` is `analysis`) is [skipped without a session](#skipping-stages-without-a-session) for issues that already carry a `Type:` and a `Complexity:` label. Needs a role with `result: analysis`. |

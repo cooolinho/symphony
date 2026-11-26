@@ -27,8 +27,9 @@ import { docsNeeded, type DocsFacts } from './docs.ts';
 import { pestMutationAvailability, type MutationFacts } from './mutation.ts';
 import { screenshotsMissing, type ScreenshotFacts } from './screenshots.ts';
 import { securityNeeded, type SecurityFacts } from './security.ts';
-import { refactoringGoals, type PersistedResult, type StageHistory } from './stage-history.ts';
+import { issueCriteria, refactoringGoals, type PersistedResult, type StageHistory } from './stage-history.ts';
 import { checkFailedRoute, resolveTransition, type RoundHistory, type StageConditions, type Transition, type TransitionProfile } from './transitions.ts';
+import { applyVerdicts, ISSUE_BODY_LIMIT, parseCriteria, upsertAddedBlock } from '../workflow/criteria.ts';
 import { isSubIssue, subIssueCount } from './work-packages.ts';
 
 /** Name of the tool a role with `result` hands off with, instead of `set_status`. */
@@ -57,7 +58,7 @@ export function resultReminder(column: string | null): string {
  * What the tool needs from the tracker: the issue's current column, the comment, the move (including `auto_merge`)
  * and the limit label.
  */
-export type ResultToolAdapter = Pick<TrackerAdapter, 'fetchIssuesByIds'> & Required<Pick<TrackerAdapter, 'postComment' | 'setStatus' | 'addLabels' | 'removeLabels'>>;
+export type ResultToolAdapter = Pick<TrackerAdapter, 'fetchIssuesByIds' | 'updateIssueBody'> & Required<Pick<TrackerAdapter, 'postComment' | 'setStatus' | 'addLabels' | 'removeLabels'>>;
 
 /** Facts for the result's meta that come from the session; read when the result is recorded. */
 export interface ResultMetaSource {
@@ -280,10 +281,11 @@ export function classificationLabels(result: StageResult, labels: readonly strin
  * (refactors included) needs a confirmed verification for every finding; a security result also needs the panel's three
  * votes when the session may start the judge.
  */
-function resultContext(issue: Issue, role: RoleConfig, history: Partial<Pick<StageHistory, 'results'>>, panel = false): ResultContext {
+function resultContext(issue: Issue, role: RoleConfig, history: Partial<Pick<StageHistory, 'results'>>, headings: readonly string[] | undefined, panel = false): ResultContext {
   const { type, complexity } = classify(issue.labels);
   const kind = role.result;
   return {
+    acceptanceCriteria: kind === 'review' ? issueCriteria(issue.description, history, headings).map((criterion) => criterion.text) : [],
     refactoringGoals: kind === 'review' && type === 'refactor' ? refactoringGoals(history) : [],
     testEvidence: kind === 'test' && needsTestEvidence(issue),
     verifiedFindings: (kind === 'review' || kind === 'security') && (complexity === 'L' || complexity === 'XL'),
@@ -296,6 +298,51 @@ function resultContext(issue: Issue, role: RoleConfig, history: Partial<Pick<Sta
 function needsTestEvidence(issue: Issue): boolean {
   const { type, complexity } = classify(issue.labels);
   return (complexity === 'L' || complexity === 'XL') && type !== 'refactor';
+}
+
+/**
+ * Edits the issue body for the recorded result: an analysis appends the criteria the body does not state, a review ticks
+ * the boxes (docs/results.md#acceptance-criteria). Reads the body again right before writing, so a human's edit made
+ * meanwhile survives. Never fails the report: a problem is a warning. Returns "ticked/total" after a review's ticks.
+ */
+async function writeCriteria(
+  adapter: ResultToolAdapter,
+  issue: Issue,
+  result: StageResult,
+  { config, round, url }: { config: ResultToolParams['config']; round: number | null; url: string | null },
+  warnings: string[],
+): Promise<string | null> {
+  const added = result.kind === 'analysis' && result.verdict === 'ready' ? [result.added_criteria, result.acceptance_criteria] : null;
+  const verdicts = result.kind === 'review' ? result.criteria : [];
+  if (config.pipeline.tickCriteria === false || adapter.updateIssueBody === undefined) return null;
+  if (verdicts.length === 0 && (added === null || added.every((entries) => entries.length === 0))) return null;
+  const headings = config.pipeline.criteriaHeadings;
+  try {
+    const current = (await adapter.fetchIssuesByIds([issue.id])).find((candidate) => candidate.id === issue.id) ?? issue;
+    const body = current.description ?? '';
+    const empty = parseCriteria(body, headings).length === 0;
+    let next = body;
+    let ticked: string | null = null;
+    if (added !== null) {
+      // An issue without any checkbox criteria gets all of the analysis's, even if it named none as added.
+      const [named = [], all = []] = added;
+      const criteria = named.length > 0 ? named : empty ? all : [];
+      if (criteria.length > 0) next = upsertAddedBlock(body, criteria, headings);
+      if (next.length > ISSUE_BODY_LIMIT) throw new Error('the issue body would get too long');
+    } else {
+      // An issue analysed before criteria went into the body gets them with its first review.
+      const base = empty && result.verdict !== 'blocked' ? upsertAddedBlock(body, verdicts.map((entry) => entry.criterion), headings) : body;
+      const applied = applyVerdicts(base, verdicts, { round, url, headings });
+      if (applied === null) throw new Error('the issue body would get too long');
+      next = applied.body;
+      ticked = `${applied.ticked}/${applied.total}`;
+    }
+    if (next !== body) await adapter.updateIssueBody(current, next);
+    return ticked;
+  } catch (error) {
+    warnings.push(`updating the acceptance criteria in the issue body failed: ${errorMessage(error)}`);
+    return null;
+  }
 }
 
 /** The conditions of one report: the configured flags plus what was looked up for this call. */
@@ -366,7 +413,7 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
 
   const plan = (args: Record<string, unknown>, stage: Conditions = { flags: params.flags ?? {}, reasons: {} }): Plan => {
     const issue = params.issue();
-    const parsed = parseResult(kind, args, resultContext(issue, role, params.history, params.panel === true));
+    const parsed = parseResult(kind, args, resultContext(issue, role, params.history, params.config.pipeline.criteriaHeadings, params.panel === true));
     if (!parsed.ok) return { ok: false, failure: fail('invalid_result', parsed.message) };
     // An analysis classifies the issue as it hands it on, so its `next` is routed by the labels it adds: the profile of
     // the new type and the `skip_when` conditions of the new complexity.
@@ -687,6 +734,8 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
     // An analysis classifies the issue before the stage hands it on, so the next stage (its profile, its model) sees the labels.
     const warnings: string[] = [];
     const classified = await applyTransitionLabels(adapter, issue, { add: classificationLabels(result, issue.labels), remove: [] }, warnings);
+    // Before the move: entering the next column may merge the pull request and close the issue.
+    const ticked = await writeCriteria(adapter, issue, result, { config: params.config, round: transition.round, url }, warnings);
     let change: StatusChange;
     try {
       change = await adapter.setStatus(issue, transition.target, { checkedSha: allowed.check?.sha ?? null });
@@ -715,6 +764,7 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
       checks: (failed?.check ?? allowed.check)?.result ?? null,
       ...(failed !== undefined ? { check_failed_for: failed.target } : {}),
       comment_url: url,
+      ...(ticked !== null ? { criteria_ticked: ticked } : {}),
       ...(labels.added.length > 0 || labels.removed.length > 0 ? { labels } : {}),
       ...(change.autoMerge !== undefined ? { auto_merge: change.autoMerge } : {}),
       ...(warnings.length > 0 ? { warnings } : {}),

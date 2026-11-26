@@ -179,13 +179,12 @@ describe('E2-8 alerts panel', () => {
     assert.equal(page.query('#alerts-list li')[0]!.textContent, 'Alles ruhig');
   });
 
-  it('CSS: panel flex 1 1 340px, wraps in one row with the budget panel', () => {
-    assert.match(decl('#alerts'), /flex:\s*1 1 340px/);
+  it('CSS: panel is a masonry card next to the budget panel and sets no margin of its own', () => {
+    assert.doesNotMatch(decl('#alerts'), /margin/);
     const page = renderPage(DASHBOARD_HTML, dashboardState());
     const row = page.$('alerts').parentNode!;
+    assert.equal(row.id, 'ov-masonry');
     assert.ok(row.contains(page.$('budget')), 'alerts and budget share a parent');
-    const cls = row.className.split(/\s+/).filter(Boolean);
-    assert.ok(cls.some((c) => /flex:[^;]*|display:\s*flex/.test(decl('.' + c)) && /flex-wrap:\s*wrap/.test(decl('.' + c))), 'row is a wrapping flex container');
   });
 
   it('CSS: badge 24 px round, rgba(248,113,113,.2), #fecaca, mono 12 px', () => {

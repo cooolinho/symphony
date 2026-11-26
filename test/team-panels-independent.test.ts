@@ -17,16 +17,17 @@ const result = (role: string, verdict: string, round: number | null, summary: st
 const text = (e: FakeElement | null) => (e ? e.textContent.replace(/\s+/g, ' ').trim() : '');
 
 describe('independent: panel row below the score (#387)', () => {
-  it('holds exactly four glass sections titled Ergebnisse, Context-Verlauf, Brain-Zugriffe and Changes, between columns and Details', () => {
+  it('holds exactly five glass sections titled Akzeptanzkriterien, Ergebnisse, Context-Verlauf, Brain-Zugriffe and Changes, between columns and Details', () => {
     const page = renderPage(AGENT_HTML, { detail: issueDetail() }, opts);
     const row = page.$('panel-row');
     const sections = row.querySelectorAll('section.g');
-    assert.equal(sections.length, 4);
+    assert.equal(sections.length, 5);
     const titles = sections.map((s) => text(s.querySelector('h2')));
-    assert.match(titles[0]!, /^Ergebnisse/);
-    assert.match(titles[1]!, /^Context-Verlauf · /);
-    assert.match(titles[2]!, /^Brain-Zugriffe · #1/);
-    assert.match(titles[3]!, /^Changes · #1/);
+    assert.match(titles[0]!, /^Akzeptanzkriterien/);
+    assert.match(titles[1]!, /^Ergebnisse/);
+    assert.match(titles[2]!, /^Context-Verlauf · /);
+    assert.match(titles[3]!, /^Brain-Zugriffe · #1/);
+    assert.match(titles[4]!, /^Changes · #1/);
     const at = (needle: string) => AGENT_HTML.indexOf(needle);
     assert.ok(at('class="cols"') < at('id="panel-row"'), 'row after the columns');
     assert.ok(at('id="panel-row"') < at('aria-label="Details"'), 'row before Details');

@@ -59,7 +59,6 @@ describe('E4-6 acceptance: panel frame', () => {
     assert.ok(link, 'link to /stats');
     assert.equal(text(link), 'Verlauf →');
     const css = norm(DASHBOARD_HTML);
-    assert.ok(css.includes('flex:11340px'), 'flex: 1 1 340px');
     assert.ok(css.includes('flex-direction:column;gap:14px'));
     assert.ok(css.includes('border-top:1pxsolidrgba(255,255,255,.08)'));
     assert.ok(css.includes('grid-template-columns:84pxminmax(0,1fr)44px52px'));

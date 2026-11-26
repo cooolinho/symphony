@@ -650,6 +650,26 @@ describe('checks/repo.sh', () => {
       }
     });
 
+    it('SYMPHONY_CHECK_LOCK_SCOPE=host-all shares one lock across check names and repositories', async () => {
+      const ci = withCheck('ci', 'echo ci ran');
+      const smoke = withCheck('prod-smoke', 'echo smoke ran');
+      const tmp = tempDir('symphony-locks-');
+      const held = await holdLock(tmp, 'host-all.lock');
+      try {
+        const host = repo(smoke, ['--lock', 'prod-smoke'], lockEnv(tmp, { SYMPHONY_CHECK_LOCK_WAIT_S: '0', SYMPHONY_CHECK_LOCK_SCOPE: 'host' }));
+        assert.equal(host.status, 0, host.out);
+        assert.match(host.out, /smoke ran/);
+        for (const [f, name, repository] of [[ci, 'ci', 'acme/app'], [smoke, 'prod-smoke', 'acme/other']] as const) {
+          const all = repo(f, ['--lock', name], lockEnv(tmp, { SYMPHONY_CHECK_LOCK_WAIT_S: '0', SYMPHONY_CHECK_LOCK_SCOPE: 'host-all', SYMPHONY_ISSUE_REPOSITORY: repository }));
+          assert.equal(all.status, 75, all.out);
+          assert.match(all.out, /host-all\.lock/);
+          assert.doesNotMatch(all.out, / ran/);
+        }
+      } finally {
+        held.release();
+      }
+    });
+
     it('treats a bad wait or scope as an environment problem (exit 2)', () => {
       const f = withCheck('ci', 'echo check ran');
       const tmp = tempDir('symphony-locks-');
@@ -658,7 +678,7 @@ describe('checks/repo.sh', () => {
       assert.match(wait.out, /SYMPHONY_CHECK_LOCK_WAIT_S must be whole seconds/);
       const scope = repo(f, ['--lock', 'ci'], lockEnv(tmp, { SYMPHONY_CHECK_LOCK_SCOPE: 'everywhere' }));
       assert.equal(scope.status, 2, scope.out);
-      assert.match(scope.out, /SYMPHONY_CHECK_LOCK_SCOPE must be repository or host/);
+      assert.match(scope.out, /SYMPHONY_CHECK_LOCK_SCOPE must be repository, host or host-all/);
     });
   });
 });

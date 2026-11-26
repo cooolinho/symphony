@@ -391,6 +391,10 @@ pipeline:
   # Hand-offs back to the developer over on_check_failed (a failed entry check, e.g. In review) per issue; the one that
   # reaches the limit goes to on_round_limit (else Blocked) with needs-human. A reset result starts the count again.
   max_check_failures: 3
+  # The checkboxes under these headings of an issue body are its acceptance criteria. Symphony appends the ones the
+  # analysis adds and ticks them after each review (docs/results.md#acceptance-criteria); tick_criteria: false never edits a body.
+  # criteria_headings: ["Acceptance criteria", "Akzeptanzkriterien"]
+  # tick_criteria: true
   # always: the issue analyst runs for every issue in Ready. when_unlabeled: it is skipped without a session for issues that
   # already carry a Type: and a Complexity: label (they go straight to In progress).
   analysis: always
@@ -543,6 +547,11 @@ Documentation needs an update.
 Plan:{% for item in results.analysis.plan %}
 {{ forloop.index }}. {{ item }}{% endfor %}
 {% endif %}
+{% endif %}{% endcapture %}{% capture criteria_block %}{% if criteria.size > 0 %}
+## Acceptance criteria of the issue
+
+{% if role == "reviewer" %}Your result judges each one in `criteria`{% else %}Your result names each one in `cases[].criterion`{% endif %}, copied word for word:{% for item in criteria %}
+- {{ item.text }}{% endfor %}
 {% endif %}{% endcapture %}{% capture design_block %}{% if results.design %}
 ## Design of the architect
 

@@ -198,6 +198,14 @@ export const ADD_COMMENT_MUTATION = /* GraphQL */ `
   }
 `;
 
+export const UPDATE_ISSUE_BODY_MUTATION = /* GraphQL */ `
+  mutation SymphonyUpdateIssueBody($issueId: ID!, $body: String!) {
+    updateIssue(input: { id: $issueId, body: $body }) {
+      issue { id }
+    }
+  }
+`;
+
 export const CREATE_PULL_REQUEST_MUTATION = /* GraphQL */ `
   mutation SymphonyCreatePullRequest($repositoryId: ID!, $base: String!, $head: String!, $title: String!, $body: String, $draft: Boolean) {
     createPullRequest(
@@ -228,6 +236,7 @@ export const SUB_ISSUE_CONTEXT_QUERY = /* GraphQL */ `
         subIssues(first: 100) {
           nodes {
             id number title state url
+            milestone { id number title }
             projectItems(first: 20) { nodes { id project { id } } }
             blockedBy(first: 50) { nodes { number } }
             subIssues(first: 100) { nodes { state } }
@@ -448,6 +457,25 @@ export const RELEASE_BRANCH_PULL_REQUESTS_QUERY = /* GraphQL */ `
       merged: pullRequests(headRefName: $head, baseRefName: $base, states: [MERGED], first: 20, orderBy: { field: UPDATED_AT, direction: DESC }) {
         nodes { number title mergeCommit { oid } }
       }
+    }
+  }
+`;
+
+/** Milestones of a repository by state, newest first; `query` narrows by title (substring). */
+export const MILESTONES_QUERY = /* GraphQL */ `
+  query SymphonyMilestones($owner: String!, $name: String!, $states: [MilestoneState!], $query: String) {
+    repository(owner: $owner, name: $name) {
+      milestones(first: 100, states: $states, query: $query, orderBy: { field: NUMBER, direction: DESC }) {
+        nodes { id number title state url }
+      }
+    }
+  }
+`;
+
+export const SET_ISSUE_MILESTONE_MUTATION = /* GraphQL */ `
+  mutation SymphonySetIssueMilestone($issueId: ID!, $milestoneId: ID!) {
+    updateIssue(input: { id: $issueId, milestoneId: $milestoneId }) {
+      issue { number milestone { number title } }
     }
   }
 `;

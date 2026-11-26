@@ -74,6 +74,8 @@ services:
             - state:/home/symphony/.local/state/symphony
             - claude:/home/symphony/.claude
             - composer-cache:/home/symphony/.cache/composer
+            # npm's download cache, so it survives a recreate (pnpm keeps its store in the workspaces volume).
+            - npm-cache:/home/symphony/.npm
             # Brain vault (brain.enabled in WORKFLOW.md); the obsidian service (profile brain) opens it
             - brain:/home/symphony/brain
             # The watchdog's state, read-only: only its heartbeat.json is read (empty without the watchdog profile).
@@ -90,9 +92,9 @@ services:
         # Lands at /run/secrets/ssh_key, the default of SYMPHONY_SSH_KEY; the entrypoint sets GIT_SSH_COMMAND.
         secrets:
             - ssh_key
-        # Optional limits; rough guide per parallel agent (Claude Code, Composer, tests): 1 CPU and 2 GB.
-        # cpus: 2
-        # mem_limit: 4g
+        # Limits per host from .env (docs/docker.md#resource-limits); 0 = no limit. Rough guide: 1 CPU and 2 GB per agent.
+        cpus: ${SYMPHONY_CPUS:-0}
+        mem_limit: ${SYMPHONY_MEM_LIMIT:-0}
 
     # Compose profile "watchdog" (COMPOSE_PROFILES=watchdog, or docker compose up -d watchdog): diagnoses issues in the
     # Blocked column with a read-only Claude session and moves them back (docs/watchdog.md). Same image, own process.
@@ -155,7 +157,8 @@ services:
             timeout: 5s
             start_period: 30s
             retries: 5
-        mem_limit: 4g
+        cpus: ${SYMPHONY_DIND_CPUS:-0}
+        mem_limit: ${SYMPHONY_DIND_MEM_LIMIT:-4g}
 
     mysql:
         image: mysql:8.0
@@ -194,8 +197,9 @@ services:
             # The first start initialises the data directory, which can take minutes on a slow disk.
             start_period: 300s
             retries: 5
-        # The tmpfs counts against it: buffer pool plus up to 2 GB of data.
-        mem_limit: 3g
+        cpus: ${SYMPHONY_MYSQL_CPUS:-0}
+        # The tmpfs counts against it: keep it above the buffer pool (512M) plus up to 2 GB of data.
+        mem_limit: ${SYMPHONY_MYSQL_MEM_LIMIT:-3g}
 
     # Compose profile "brain" (COMPOSE_PROFILES=brain, or docker compose up -d obsidian): Obsidian in the browser, opening
     # the brain vault (docs/docker.md, "Obsidian"). Without the profile it does not start. Open /config/vault as the vault.
@@ -251,6 +255,7 @@ volumes:
     state:
     claude:
     composer-cache:
+    npm-cache:
     brain:
     # Profile "brain": Obsidian's settings (/config).
     obsidian-config:

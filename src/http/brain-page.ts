@@ -1,3 +1,4 @@
+import { BRAIN_ACCESS_CSS, BRAIN_ACCESS_JS, brainAccessControlsHtml } from './brain-access.ts';
 import { CONTROLS_OFF } from './tasks-page.ts';
 import { AURORA, escapeHtml, page } from './ui/layout.ts';
 
@@ -31,7 +32,7 @@ const BRAIN_CSS = `
   .br-type.ui-chip { font-size: 11px; }
   .br-title { margin: 0; font: 600 15px/1.35 var(--sans); color: var(--fg-strong); overflow-wrap: anywhere; }
   .br-target { font: 500 12px var(--mono); color: var(--fg-3); overflow-wrap: anywhere; }
-  .br-excerpt { margin: 0; font-size: 13px; line-height: 1.5; color: var(--fg-chip); overflow-wrap: anywhere; }
+  .br-excerpt { margin: 0; font-size: 13px; line-height: 1.5; color: var(--fg-chip); overflow-wrap: anywhere; max-width: var(--read-width); }
   .br-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   .br-msg { margin: 0; font-size: 12px; color: var(--red); }
   .br-msg:empty { display: none; }
@@ -77,12 +78,17 @@ const BRAIN_CSS = `
     .node { animation: none; }
     .br-clash { animation: none; }
   }
+  ${BRAIN_ACCESS_CSS}
+  .br-access { padding: 18px; display: flex; flex-direction: column; gap: 12px; }
+  .br-access > .panel-head { margin: 0; }
+  @media (max-width: 480px) { #zugriffe .brain-acc { grid-template-columns: 64px minmax(0, 1fr); } #zugriffe .brain-note { grid-column: 1 / -1; } }
 `;
 
 /**
  * The Brain page: title block with vault path, commit count and Obsidian link; vitals (status bar and four tiles); candidate
  * review (promote, edit in Obsidian, discard, undo per card); the graph around a repository index (ring layout, folder
- * colours, at most 24 nodes); the vault structure; the write clashes with a side-by-side line diff and the week's balance.
+ * colours, at most 24 nodes); the vault structure; the write clashes with a side-by-side line diff and the week's balance; last the Brain accesses (section "Zugriffe", anchor
+ * #zugriffe) with role filter chips and a search, shared with the overview card (brain-access.ts).
  */
 export const BRAIN_HTML = page({
   title: 'Brain · Symphony',
@@ -128,10 +134,17 @@ export const BRAIN_HTML = page({
       <p class="br-week" id="brain-clash-week"></p>
       <details id="brain-clashes-resolved" hidden><summary></summary><div></div></details>
     </section>
+    <section class="g br-access" id="zugriffe" aria-labelledby="zugriffe-title">
+      <div class="panel-head"><h2 class="lbl" id="zugriffe-title">Zugriffe</h2><span class="br-count" id="zugriffe-count" aria-live="polite"></span></div>
+      ${brainAccessControlsHtml({ roles: 'zugriffe-roles', input: 'zugriffe-q', list: 'zugriffe-list' })}
+    </section>
   </div>`,
-  scripts: `
+  scripts: `${BRAIN_ACCESS_JS}
 (() => {
   const $ = (id) => document.getElementById(id);
+  const access = brainAccessView({ roles: 'zugriffe-roles', count: 'zugriffe-count', list: 'zugriffe-list' });
+  let accessSeq = 0;
+  let accessPrint = null;
   const CONTROLS_OFF = ${JSON.stringify(CONTROLS_OFF)};
   const SAFE_URL = /^(https?|obsidian):\\/\\/\\S/i;
   const SUB = 'Das gemeinsame Gedächtnis der Agents';
@@ -728,6 +741,22 @@ export const BRAIN_HTML = page({
     return { status: res.status, ok: res.ok, body };
   }
 
+  async function loadAccess() {
+    const seq = ++accessSeq;
+    let list = null;
+    try {
+      const r = await getJson('/api/v1/brain/access?limit=' + BRAIN_ACCESS_LIMIT);
+      if (r.ok && r.body && Array.isArray(r.body.access)) list = r.body.access;
+    } catch (error) { /* keep the last rows */ }
+    if (seq !== accessSeq) return;
+    if (list) access.setEntries(list);
+    const print = JSON.stringify([list, access.filter()]);
+    if (accessPrint === null || print !== accessPrint) {
+      accessPrint = print;
+      access.render(Date.now());
+    }
+  }
+
   async function load() {
     try {
       const [state, v, c, k] = await Promise.all([
@@ -748,6 +777,7 @@ export const BRAIN_HTML = page({
       }
       if (!v.ok || !c.ok || !k.ok) throw new Error('HTTP ' + (!v.ok ? v.status : !c.ok ? c.status : k.status));
       allowed = !!(state && state.ok && state.body && (!state.body.controls || state.body.controls.retry !== false));
+      access.setProfile(state && state.ok ? state.body : null);
       vitals = v.body;
       candidates = Array.isArray(c.body && c.body.candidates) ? c.body.candidates : (Array.isArray(c.body) ? c.body : []);
       clashes = Array.isArray(k.body && k.body.clashes) ? k.body.clashes : [];
@@ -756,7 +786,7 @@ export const BRAIN_HTML = page({
       $('brain-main').hidden = false;
       setLive(true);
       render();
-      await loadGraph();
+      await Promise.all([loadGraph(), loadAccess()]);
     } catch (error) {
       setLive(false);
       $('brain-error').textContent = 'Brain-Daten konnten nicht geladen werden: ' + error.message;
@@ -764,6 +794,7 @@ export const BRAIN_HTML = page({
     }
   }
 
+  access.bind($('zugriffe-q'));
   load();
   live(load, pollEvery(load, 15000), 2000);
 })();

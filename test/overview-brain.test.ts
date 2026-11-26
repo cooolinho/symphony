@@ -234,7 +234,7 @@ describe('Brain-Zugriffe', () => {
 });
 
 describe('without Brain', () => {
-  const hiddenAll = (s: ReturnType<typeof setup>) => ['brain-row', 'brain-panel', 'brain-access'].every((id) => s.$(id).hidden);
+  const hiddenAll = (s: ReturnType<typeof setup>) => ['brain-panel', 'brain-access'].every((id) => s.$(id).hidden);
   for (const [name, answer] of [
     ['404 brain_disabled', { ok: false, status: 404, body: { error: { code: 'brain_disabled' } } }],
     ['network error', new Error('down')],
@@ -284,6 +284,6 @@ describe('overview integration', () => {
       },
     });
     await settle();
-    assert.ok(['brain-row', 'brain-panel', 'brain-access'].every((id) => page.$(id).hidden));
+    assert.ok(['brain-panel', 'brain-access'].every((id) => page.$(id).hidden));
   });
 });

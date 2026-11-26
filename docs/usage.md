@@ -75,6 +75,17 @@ continues in the same workspace and reads your comments. Move an issue out of `B
 problem is resolved. The optional [Blocked watchdog](watchdog.md) does this for you where it can: it diagnoses every
 blocked issue from the logs, comments, and moves it back or adds `needs-human`.
 
+### Acceptance criteria
+
+The checkboxes under `## Acceptance criteria` (or `## Akzeptanzkriterien`) are the issue's acceptance criteria. The
+analyst's new or sharpened ones are appended to the body in a block of their own. In "Agent review" the reviewer proves
+each one, where possible by running a test or command or taking a screenshot, and Symphony ticks the proven boxes, with
+a short note and a link to the review. This happens in every round, so you see the progress after `changes_needed` too,
+and a box is unticked when a later round finds it broken. The reviewer cannot approve while a criterion is unmet. A
+criterion only a human can check (production, a real device, a third-party system) is marked `👤 manuell prüfen`, does
+not block the approval, and its box is yours to tick. The dashboard's issue page shows the same list. Details:
+[results.md](results.md#acceptance-criteria).
+
 ### Bug issues: the bugfix profile
 
 An issue of type `bugfix` (label `Type: bugfix`, or `bug`; the analyst sets it when the issue has no type) follows the
@@ -506,7 +517,7 @@ Symphony ships these commands:
 | `/refactoring [scope]` | Audit of a Laravel/Filament repository: context, baseline, bugs and refactoring candidates. The result is sub-issues. |
 | `/refactor-safely` | Restructure without changing behavior, with tests as a safety net. Is the first line of every refactoring sub-issue. |
 | `/auto-code [description] [wave=3] [checkpoint=5] [issue-models=auto]` | [Autopilot](#autopilot-auto-code): develops the repository continuously from its project description, in waves of sub-issues that are implemented right away. |
-| `/concept <path> [issue-models=auto]` | [Concept to Backlog](#concept-to-backlog-concept): breaks down a concept (Markdown file) into epics and sub-issues with dependencies, as well as model and effort labels. Everything ends up in the backlog. |
+| `/concept <path> [issue-models=auto] [milestone=auto]` | [Concept to Backlog](#concept-to-backlog-concept): breaks down a concept (Markdown file) into epics and sub-issues with dependencies, as well as model and effort labels. Everything ends up in the backlog. |
 | `/plan [<path>] [issue-models=auto]` | [List to Backlog](#list-to-backlog-plan): turns every item of a list (a file in the repository, or the issue description itself) into one sub-issue with a detailed implementation plan, dependencies and category, effort and model labels. Everything ends up in the backlog. |
 | `/brain-garden` | Tidies the knowledge vault: duplicates, orphans and broken links become candidate notes. |
 | `/release [vX.Y.Z]` | [Release per issue](#release-per-issue-release): once its *Blocked by* issues or epics are done, turns everything merged since the last tag into a version: bump, merge into the default branch, tag and GitHub release, fully automatic. |
@@ -686,6 +697,16 @@ only start when you move them to **Ready**. The instructions are in the skill
 [`concept`](../.claude/skills/concept/SKILL.md), the breakdown rules in
 [breakdown.md](../.claude/skills/concept/breakdown.md).
 
+**Milestone.** Epics and issues of one run go into one GitHub milestone, which is created if it does not exist
+(`milestone=<auto|off|<title>>`, default `auto`; the concept issue itself gets none). `auto` takes the highest of the
+latest SemVer tag on the base branch (`vX.Y.Z` or `X.Y.Z`) and the open SemVer milestones and uses the next minor
+version: tag `v1.4.0` and open milestone `1.5.0` give `1.6.0`, so two concepts one after the other land in `1.5.0`,
+then `1.6.0`. Without any SemVer tag or milestone there is no milestone, and the report says so. `off` sets none;
+`milestone=1.5.0` names one (text like "Release 1.5.0" in the brief counts the same). A closed milestone is never
+reopened. The plan names the milestone: a continuation after an abort reuses it, an addendum uses it too unless it is
+closed by now, then a new one is chosen like `auto`. The agent tools are `create_sub_issue` with `milestone` and the
+read-only `list_milestones` ([GitHub adapter](adapters/github-project.md)).
+
 ### Setup
 
 1. **Concept:** a Markdown file on the base branch (`SYMPHONY_BASE_BRANCH`, otherwise the default branch), because
@@ -696,7 +717,8 @@ only start when you move them to **Ready**. The instructions are in the skill
 3. **Issue:** description `/concept docs/index.md`, optionally `issue-models=auto|fable|opus|sonnet|haiku|off` (default
    `off`: no model labels, the model follows the issue's complexity, see
    [Model and effort per role](#model-and-effort-per-role)), optionally `issue-efforts=auto|off` (default `off`: no
-   effort labels) and below it text with focus areas or exclusions. Then move it to **Ready**.
+   effort labels), optionally `milestone=auto|off|<title>` (default `auto`, see below) and below it text with focus
+   areas or exclusions. Then move it to **Ready**.
 
 Check with `npm run dry-run`: the issue shows up with `role=analyst` and `↳ command /concept → symphony:concept`.
 
@@ -1689,6 +1711,7 @@ With one stack per workspace, `laravel.php` can point to a wrapper script that r
 | `before_run hook exited with code 128 … not a git repository` | The workspace contains no clone, because `after_create` skipped over a failed `git clone` (without `set -e` only the last line of the hook counts). Symphony prepares empty workspaces again on the next attempt by itself. If the workspace is not empty but broken, delete the directory. |
 | An agent keeps starting over | The issue never leaves the active columns, for example because the handoff column is missing or `set_status` fails (warning `agent tracker_tool` with `set_status failed` in the log). First pause (`max_concurrent_agents: 0`), then fix the columns or the prompt. |
 | Warning `agent agent_error` (e.g. `authentication_failed`) or `startup_failed` | Claude Code is not logged in, or the account has a problem. Start `claude` once and run `/login`, or set `ANTHROPIC_API_KEY`. |
+| Every run fails after about 2 seconds with `worker_error: Native CLI binary for linux-x64 not found` | The SDK starts Claude Code from the optional package `@anthropic-ai/claude-agent-sdk-<platform>-<arch>`, and it is missing from `node_modules` (a manual `npm ci --omit=optional`, or an install outside the image whose download failed). The Docker build checks for the binary and stops if it is missing. Locally, run `npm ci` again; in Docker, rebuild the image (`docker compose build symphony`). Check: `ls node_modules/@anthropic-ai/`. |
 | `env file values ignored because the shell environment already sets them` | The variable is also set in the shell, and the shell wins. `unset GITHUB_TOKEN` or adjust the value there. |
 | `unknown board column "…" (valid: …)` | The `WORKFLOW.md` names a column that does not exist on the board (typo in `active_states`, `terminal_states`, `roles.*.states`, `roles.*.may_move_to` or `checks.on_enter`). Fix the name; the check is case-insensitive and the error disappears after the automatic reload. The dry run shows it as well. |
 | `dispatch validation failed` | An error in the `WORKFLOW.md` or `.env`. The exact message is in the log or the dashboard. |

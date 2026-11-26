@@ -1,4 +1,5 @@
 import { ALERTS_CSS, ALERTS_JS } from './alerts.ts';
+import { MASONRY_CSS, MASONRY_JS } from './ui/masonry.ts';
 import { BUDGET_CHART_CSS, BUDGET_CHART_JS } from './budget-chart.ts';
 import { PIPELINE_CSS, PIPELINE_JS } from './pipeline.ts';
 import { ACTIVITY_CSS, ACTIVITY_JS } from './overview-activity.ts';
@@ -99,14 +100,10 @@ const DASHBOARD_CSS = `
   .agent-foot { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; padding-top: 12px; border-top: 1px dashed var(--line-2); margin-top: auto; }
   .agent-foot div { min-width: 0; }
   .agent-foot .v { display: block; margin-top: 2px; font: 600 13.5px var(--mono); font-variant-numeric: tabular-nums; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .agents-empty { display: flex; align-items: center; gap: 16px; padding: 26px 18px; border: 1px dashed var(--line-2); border-radius: var(--radius);
-    background: repeating-linear-gradient(135deg, rgba(255, 255, 255, .012) 0 8px, transparent 8px 16px); }
-  .agents-empty .big { font: 600 13px var(--mono); letter-spacing: .16em; color: var(--text-2); text-transform: uppercase; }
-  .cursor { display: inline-block; width: 8px; height: 15px; background: var(--green); vertical-align: -2px; margin-left: 4px; animation: blink 1.1s steps(1) infinite; }
-  @keyframes blink { 50% { opacity: 0; } }
+  .agents-empty { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 0; font-size: 13px; color: var(--fg-2); }
+  .agents-empty[hidden] { display: none; }
 
   /* Lower area: activity stream */
-  .lower { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; }
   .feed { list-style: none; margin: 0; padding: 10px 0; max-height: 360px; overflow-y: auto; border-radius: var(--radius-sm);
     background: rgba(0, 0, 0, .35); border: 1px solid var(--line); font: 12.5px/1.65 var(--mono); }
   .feed li { display: grid; grid-template-columns: 72px minmax(0, 9.5em) minmax(0, 1fr); gap: 12px; padding: 1px 14px; color: var(--muted);
@@ -173,10 +170,9 @@ const DASHBOARD_CSS = `
     .syscards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
 
-  /* Context budget panel next to the alerts: two window bars, tokens per role, hot-context cards */
-  .ov-row { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 20px; margin: 18px 0; }
-  .ov-row .budget { margin: 0; }
-  .budget { flex: 1 1 340px; min-width: 0; padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; }
+  /* Context budget panel: two window bars, tokens per role, hot-context cards */
+  .budget { min-width: 0; padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; }
+  .budget-head h2 { margin: 0; }
   .budget-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
   .budget-body { display: flex; flex-direction: column; gap: 14px; }
   .budget-win { display: flex; flex-direction: column; gap: 8px; }
@@ -203,7 +199,7 @@ export const DASHBOARD_HTML = page({
   nav: 'overview',
   aurora: AURORA.overview,
   pollNow: true,
-  styles: PIPELINE_CSS + TEAMS_CSS + ALERTS_CSS + HEAD_CSS + ACTIVITY_CSS + BRAIN_CSS + BUDGET_CHART_CSS + DASHBOARD_CSS,
+  styles: PIPELINE_CSS + TEAMS_CSS + ALERTS_CSS + HEAD_CSS + ACTIVITY_CSS + BRAIN_CSS + BUDGET_CHART_CSS + DASHBOARD_CSS + MASONRY_CSS,
   body: `
   <div class="page-title ov-head">
     <div class="ov-title">
@@ -221,24 +217,8 @@ export const DASHBOARD_HTML = page({
     <span class="dot tone-amber"></span><span id="dispatch-gate-text"></span>
   </section>
 
-  <section class="panel" id="system-panel" aria-labelledby="system-title">
-    <div class="section-head"><h2 id="system-title">System</h2><span class="sys-host" id="system-host"></span></div>
-    <div class="syscards" id="system-cards" role="group" aria-label="System"></div>
-  </section>
-  <div class="stats" id="stats" aria-label="Metrics"></div>
-
-  <div class="ov-row">
-    <section id="alerts" class="panel alerts" aria-labelledby="alerts-title">
-      <div class="section-head"><h2 class="lbl" id="alerts-title">Alerts</h2><span class="alerts-badge" id="alerts-count" aria-live="polite" hidden>0</span></div>
-      <ul class="alerts-list" id="alerts-list"></ul>
-    </section>
-    <section class="g budget" id="budget" aria-labelledby="budget-title">
-      <div class="budget-head"><span class="lbl" id="budget-title">Context-Budget · heute</span><a class="budget-more" href="/stats">Verlauf →</a></div>
-      <div class="budget-body" id="budget-body"></div>
-    </section>
-  </div>
-
-  <section class="agents-section teams-section" id="teams-section" aria-labelledby="teams-title">
+  <div class="masonry" id="ov-masonry">
+  <section class="agents-section teams-section wide" id="teams-section" aria-labelledby="teams-title">
     <div class="section-head"><h2 id="teams-title">Teams live <span class="count" id="teams-count"></span></h2><a class="teams-all" href="/tasks">Alle Tasks →</a></div>
     <div class="team-list" id="teams"></div>
   </section>
@@ -249,14 +229,30 @@ export const DASHBOARD_HTML = page({
     </div>
     <p class="tasks-line" id="tasks-line"><span id="tasks-line-text"></span> · <a class="section-link" href="/tasks">Alle Tasks</a></p>
     <div class="agents" id="running"></div>
-    <div class="agents-empty" id="issues-empty" hidden>
-      <span class="badge tone-gray"><span class="dot"></span><span>Idle</span></span>
-      <div><div class="big">No agents running<span class="cursor" aria-hidden="true"></span></div>
-        <div class="muted" id="issues-empty-sub">Waiting for issues in an active column.</div></div>
-    </div>
+    <p class="agents-empty" id="issues-empty" hidden><span class="dot tone-gray"></span><span>No agents running</span><span aria-hidden="true">·</span><span class="muted" id="issues-empty-sub">Waiting for issues in an active column.</span></p>
   </section>
 
-  <section class="panel act-section" id="tool-activity" aria-labelledby="tool-activity-title">
+  <section class="g budget" id="budget" aria-labelledby="budget-title">
+    <div class="budget-head"><h2 class="lbl" id="budget-title">Context-Budget · heute</h2><a class="budget-more" href="/stats">Verlauf →</a></div>
+    <div class="budget-body" id="budget-body"></div>
+  </section>
+
+  <section id="alerts" class="panel alerts" aria-labelledby="alerts-title">
+    <div class="section-head"><h2 class="lbl" id="alerts-title">Alerts</h2><span class="alerts-badge" id="alerts-count" aria-live="polite" hidden>0</span></div>
+    <ul class="alerts-list" id="alerts-list"></ul>
+  </section>
+
+  <section class="panel" id="system-panel" aria-labelledby="system-title">
+    <div class="section-head"><h2 id="system-title">System</h2><span class="sys-host" id="system-host"></span></div>
+    <div class="syscards" id="system-cards" role="group" aria-label="System"></div>
+  </section>
+
+  <section class="panel" id="stats" aria-labelledby="stats-title">
+    <div class="section-head"><h2 id="stats-title">Kennzahlen · seit Start</h2></div>
+    <div class="stats" id="stats-tiles" aria-label="Metrics"></div>
+  </section>
+
+  <section class="panel act-section wide" id="tool-activity" aria-labelledby="tool-activity-title">
     <div class="section-head">
       <h2 class="lbl" id="tool-activity-title">Agent-Aktivität · letzte 30 min</h2>
       <div class="act-legend" id="tool-activity-legend"></div>
@@ -266,14 +262,13 @@ export const DASHBOARD_HTML = page({
   </section>
 
 ${BRAIN_PANELS_HTML}
-  <div class="lower">
-    <section aria-labelledby="activity-title">
-      <div class="section-head">
-        <h2 id="activity-title">Agent activity</h2>
-        <span class="meta">live stream · newest first</span>
-      </div>
-      <ol class="feed" id="feed" aria-live="off"></ol>
-    </section>
+  <section id="activity-section" aria-labelledby="activity-title">
+    <div class="section-head">
+      <h2 id="activity-title">Agent activity</h2>
+      <span class="meta">live stream · newest first</span>
+    </div>
+    <ol class="feed" id="feed" aria-live="off"></ol>
+  </section>
   </div>
 `,
   after: `<div class="rain" id="rain" aria-hidden="true"></div>
@@ -307,9 +302,12 @@ ${BRAIN_PANELS_HTML}
   scripts: `
 (() => {
 ${PIPELINE_JS}${TEAMS_JS}
-${ALERTS_JS}${HEAD_JS}${ACTIVITY_JS}${BRAIN_JS}${BUDGET_CHART_JS}
+${ALERTS_JS}${HEAD_JS}${ACTIVITY_JS}${BRAIN_JS}${BUDGET_CHART_JS}${MASONRY_JS}
 
   const $ = (id) => document.getElementById(id);
+  let ovMasonry = null;
+  function ovMasonrySync() { if (ovMasonry) ovMasonry.refresh(); else ovMasonry = masonryMount($('ov-masonry')); }
+  function brainOnVisibility() { if (ovMasonry) ovMasonry.refresh(); }
   const setText = (node, text) => { text = String(text ?? ''); if (node.textContent !== text) node.textContent = text; };
   const splitId = (identifier) => {
     const i = String(identifier).lastIndexOf('#');
@@ -1264,7 +1262,7 @@ ${ALERTS_JS}${HEAD_JS}${ACTIVITY_JS}${BRAIN_JS}${BUDGET_CHART_JS}
     const waiting = queue.filter((item) => item.status === 'waiting').length;
     const paused = queue.filter((item) => item.status === 'paused').length;
     const blocked = state.counts.blocked ?? 0;
-    tiles('stats', [
+    tiles('stats-tiles', [
       ['Running', pad2(running), 'active agents', { tone: running ? 'green' : 'gray', hero: true, pulse: running > 0, of: pad2(h.max_concurrent_agents) }],
       ['Up next', pad2(next), 'in start order', { tone: next ? 'cyan' : 'gray' }],
       ['Waiting', pad2(waiting + paused), waiting + ' waiting · ' + paused + ' paused', { tone: waiting + paused ? 'amber' : 'gray' }],
@@ -1280,6 +1278,7 @@ ${ALERTS_JS}${HEAD_JS}${ACTIVITY_JS}${BRAIN_JS}${BUDGET_CHART_JS}
     diffSnapshots(state);
     fetchDetails(state);
     renderActivity();
+    ovMasonrySync();
   }
 
   let loading = false, reloadAgain = false;
@@ -1301,6 +1300,7 @@ ${ALERTS_JS}${HEAD_JS}${ACTIVITY_JS}${BRAIN_JS}${BUDGET_CHART_JS}
       setLive(false);
       renderHead(null, Date.now(), false);
       renderAlerts([{ kind: 'attention', at: new Date().toISOString(), title: 'Orchestrator nicht erreichbar', text: error.message, href: '/stats' }], $('alerts-list'), $('alerts-count'));
+      ovMasonrySync();
     }
     loading = false;
     if (reloadAgain) { reloadAgain = false; load(); }

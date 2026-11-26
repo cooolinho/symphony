@@ -47,7 +47,7 @@ import { createGuard, guardTools, toolsForRole, type CheckCache, type CheckRecor
 import { createResultTool, resultReminder, type LessonFacts, type PathRule, type ResultToolAdapter, type ResultToolParams } from './result-tool.ts';
 import { reviewedFiles, securityBaseRef } from './security.ts';
 import { interruptedTransition } from './recovery.ts';
-import { analysisFlagsSecurity, analysisNeedsDocs, docsBaseHead, buildStageHistory, humanFeedback, implementationHead, resultRows, resultsTemplateValue, type HumanFeedbackComment, type PersistedResult, type ResultsTemplateValue, type StageHistory } from './stage-history.ts';
+import { analysisFlagsSecurity, analysisNeedsDocs, docsBaseHead, buildStageHistory, humanFeedback, implementationHead, issueCriteria, resultRows, resultsTemplateValue, type HumanFeedbackComment, type PersistedResult, type ResultsTemplateValue, type StageHistory } from './stage-history.ts';
 import { effectivePaths } from '../workflow/path-globs.ts';
 import { subIssueLimit } from './work-packages.ts';
 
@@ -797,7 +797,9 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
         : null;
     if (signal.aborted) return await finish(cancelled());
     const lessonVariables = reviewLessonVariables(role, lessonSources, support);
+    const criteria = issueCriteria(issue.description, support?.history ?? {}, params.workflow.config.pipeline.criteriaHeadings);
     const resultVariables = {
+      criteria,
       brain: brainMode,
       brain_index: repository !== null && isRepositoryName(repository) ? `Repos/${repoFolderName(repository)}/index.md` : null,
       results: support?.results ?? EMPTY_RESULTS,
@@ -833,7 +835,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       policy: { readOnly: role?.readOnly ?? false },
       // The bare name too: a repository's own .claude/agents may load the same agent without the plugin prefix.
       deniedAgents: agents.denied.flatMap((agent) => [agent.qualified, agent.name]),
-      subagentContext: { role: name, acceptanceCriteria: resultVariables.results.analysis?.acceptance_criteria ?? [] },
+      subagentContext: { role: name, acceptanceCriteria: criteria.map((criterion) => criterion.text) },
       // Entry checks run inside the status tool call; leave a minute for the tracker call around them.
       toolTimeoutMs: Math.max(params.workflow.config.checks.timeoutMs, maxColumnCheckMs(params.workflow.config.checks)) + TOOL_TIMEOUT_MARGIN_MS,
       tools: guardTools(observeMerges(toolsForRole(params.adapter.agentToolSpecs(), role, issue, support?.tool ?? null), callbacks.merged), guard),
