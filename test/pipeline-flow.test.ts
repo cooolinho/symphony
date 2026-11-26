@@ -1352,7 +1352,8 @@ function analystPipeline(stages: Stage[], labels: string[] = []) {
 
 describe('issue analyst stage', () => {
   it('ready: labels an unlabelled issue with Type and Complexity before the move, and the developer gets the analysis', async () => {
-    const { h, labelsAtMove } = analystPipeline([analysed(), done(), approved()]);
+    const criteria = (ANALYSIS.acceptance_criteria as string[]).map((criterion) => ({ criterion, status: 'met', evidence: 'test passed' }));
+    const { h, labelsAtMove } = analystPipeline([analysed(), done(), reporting({ ...APPROVED, criteria })]);
     await run(h);
 
     assert.deepEqual(h.tracker.statusCalls, ['In progress', 'Agent review', 'In review']);
@@ -1370,6 +1371,10 @@ describe('issue analyst stage', () => {
       ['reviewer', 'approved', 'In review'],
     ]);
     assert.deepEqual(data(h.reports[0]).labels, { added: ['Type: bugfix', 'Complexity: M'], removed: [] });
+    // The analysis put its criteria into the issue body, and the review ticked them.
+    assert.equal(h.tracker.bodyUpdates.length, 2);
+    assert.match(issue(h).description ?? '', /- \[x\] The export lists every invoice <!-- symphony:ac -->/);
+    assert.equal(data(h.reports[2]).criteria_ticked, '2/2');
   });
 
   it('hands the role name and the analysed acceptance criteria to every session as subagentContext', async () => {

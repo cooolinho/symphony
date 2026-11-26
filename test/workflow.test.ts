@@ -984,6 +984,8 @@ describe('result-driven roles and the pipeline section', () => {
         maxSecurityRounds: 2,
         maxCheckFailures: 3,
         limitLabel: 'needs-human',
+        criteriaHeadings: ['Acceptance criteria', 'Akzeptanzkriterien'],
+        tickCriteria: true,
         typeLabels: [],
         defaultType: 'feature',
         analysis: 'always',

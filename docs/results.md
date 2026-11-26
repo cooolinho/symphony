@@ -25,14 +25,47 @@ reported to the agent instead of being dropped silently.
 
 | Kind | Verdicts | Fields |
 |---|---|---|
-| `analysis` | `ready`, `needs_info` | `type`, `complexity` (S/M/L/XL), `components[]`, `acceptance_criteria[]`, `risks {security, data_migration, breaking_change}`, `docs_needed`, `open_questions[]`, `plan[]`, `refactoring_goals[]` (refactor issues: what the refactoring has to achieve) |
+| `analysis` | `ready`, `needs_info` | `type`, `complexity` (S/M/L/XL), `components[]`, `acceptance_criteria[]`, `added_criteria[]` (criteria Symphony appends to the issue body, see [Acceptance criteria](#acceptance-criteria)), `risks {security, data_migration, breaking_change}`, `docs_needed`, `open_questions[]`, `plan[]`, `refactoring_goals[]` (refactor issues: what the refactoring has to achieve) |
 | `design` | `ready`, `split`, `blocked` | `options[]`, `decision`, `components[]`, `interfaces[]`, `migrations[]`, `compatibility`, `work_packages[]` (optional; with `split` at least two), `plan[]` (implementation steps in order, each with its files), `tests[]` (one test per acceptance criterion) |
 | `implementation` | `done`, `blocked` | `changed_files[]`, `tests_added[]`, `notes`, `plan_deviations[]`, `screenshots_problem` (a UI change without screenshots: the failed step and its error message) |
 | `test` | `passed`, `failed`, `blocked` | `cases[] {criterion, test, status: passed\|failed\|skipped, red_at_base?: {command, output?}, existing?}`, `commands[]`, `uncovered_criteria[]`, `mutation_score` (0–100), `mutation_command`, `mutation_problem` (see [Test evidence at L/XL](#test-evidence-at-lxl)) |
-| `review` | `approved`, `changes_needed`, `blocked` | `findings[] {severity: blocker\|major\|minor\|nit, category?, file, line, problem, fix, verification?: {status: confirmed\|refuted, evidence}}` (`category`: kebab-case slug of at most 40 characters for the pattern of the problem, required by the role prompts for blocker and major findings; see [brain.md](brain.md#review-lessons)), `lessons[]` (vault paths of the lessons for the recurring categories), `refuted[]` (candidates the verification refuted: a finding with a refuted `verification`; see [Verified findings at L/XL](#verified-findings-at-lxl)), `checked[]`, `confirmed_goals[]` (refactor issues: the analysis's refactoring goals the review confirms) |
+| `review` | `approved`, `changes_needed`, `blocked` | `findings[] {severity: blocker\|major\|minor\|nit, category?, file, line, problem, fix, verification?: {status: confirmed\|refuted, evidence}}` (`category`: kebab-case slug of at most 40 characters for the pattern of the problem, required by the role prompts for blocker and major findings; see [brain.md](brain.md#review-lessons)), `lessons[]` (vault paths of the lessons for the recurring categories), `refuted[]` (candidates the verification refuted: a finding with a refuted `verification`; see [Verified findings at L/XL](#verified-findings-at-lxl)), `checked[]`, `criteria[] {criterion, status: met\|unmet\|manual, evidence?, reason?}` (see [Acceptance criteria](#acceptance-criteria)), `confirmed_goals[]` (refactor issues: the analysis's refactoring goals the review confirms) |
 | `security` | `passed`, `issues_found`, `blocked` | `findings[]`, `refuted[]` and `lessons[]` (as in `review`); at L/XL with the refutation panel `verification.votes[] {lens: reachability\|impact\|defenses, verdict: confirmed\|refuted, evidence}` (see [Security panel at L/XL](#security-panel-at-lxl)) |
 | `docs` | `done`, `not_needed`, `blocked` | `files[]` |
 | `skipped`, `reset` | same as the kind | internal, recorded by Symphony without agent input (`skipped`: a stage passed [without a session](configuration.md#skipping-stages-without-a-session)) |
+
+## Acceptance criteria
+
+The checkboxes in the issue body show which acceptance criteria are proven. The criteria are:
+
+- every `- [ ]` line under a heading of `pipeline.criteria_headings` (default `Acceptance criteria` and
+  `Akzeptanzkriterien`; any level, up to the next heading of the same or a higher level). Task lists elsewhere, in code
+  blocks or in HTML comments do not count;
+- the lines of the block Symphony appends, between `<!-- symphony:criteria:start -->` and
+  `<!-- symphony:criteria:end -->`.
+
+An issue without any of these uses the analysis's `acceptance_criteria`. This list is in the prompts of the test engineer
+and the reviewer and in the context of the session's subagents.
+
+1. **Analysis** (`ready` only): Symphony writes `added_criteria` into its block, without those the body already states as
+   checkboxes. A later analysis replaces the block; a line that stays keeps its tick. An issue without any criteria
+   checkbox gets the block with `acceptance_criteria` when `added_criteria` is empty.
+2. **Review**: `criteria` holds one entry per criterion, copied word for word (case and spacing do not matter).
+   `report_result` refuses the result with `invalid_result` when one is missing, unknown or listed twice (not for
+   `blocked`), when `met` has no `evidence` or `manual` no `reason`, and when `approved` leaves one `unmet`.
+3. **Ticks**, after the result comment is posted and before the issue moves (a move may merge and close it):
+
+| Status | Box | Note behind the criterion |
+|---|---|---|
+| `met` | ticked | `✅ R<round> · Beleg: <evidence> · Review` (link to the result comment) |
+| `unmet` | unticked | `❌ R<round> · <reason> · Review` |
+| `manual` | left to the human; only a tick Symphony set itself is removed | `👤 manuell prüfen R<round> · <reason> · Review` |
+
+Every review round judges afresh, so a box can lose its tick again. The note follows a `<!-- symphony:ac -->` comment,
+which separates it from the criterion's text; it is cut to 120 characters and holds no HTML or notifying @mention. The
+first review of an issue that has no checkbox at all (analysed before this feature) adds them in the block. When the body
+cannot be written (permissions, GitHub's 65,536 character limit), the result is recorded and the issue moves with a
+warning. `pipeline.tick_criteria: false` leaves every issue body alone; the rules of step 2 stay.
 
 ## Labels from the analysis
 
@@ -55,6 +88,7 @@ see them):
 - `blocked` needs at least one blocker.
 - `approved` (review) and `passed` (security) allow no `blocker` or `major` findings; `changes_needed` and
   `issues_found` need at least one finding.
+- A `review` judges every [acceptance criterion](#acceptance-criteria) in `criteria`; `approved` allows no `unmet` one.
 - `failed` (test) needs a case with status `failed`; `passed` allows none.
 - `mutation_score` (test) needs `mutation_command`, the `pest --mutate --covered-only` call.
 - A `passed` or `failed` test result of an **L/XL issue that is not a refactor** needs `red_at_base` for every new case

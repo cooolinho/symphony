@@ -42,6 +42,7 @@ import { WorkspaceManager, type HookIssue, type Workspace } from '../workspace/m
 import type { ServiceConfig } from '../workflow/config.ts';
 import { profileFor } from '../workflow/profile.ts';
 import { roleFor, roleName, type RoleConfig } from '../workflow/roles.ts';
+import { parseCriteria, uniqueCriteria } from '../workflow/criteria.ts';
 import { internalResult, panelVoteCounts, renderResultComment, severeCategoryCounts, verificationCounts, type ResultMeta } from '../workflow/results.ts';
 import type { EffectiveWorkflow, WorkflowLoadError } from '../workflow/store.ts';
 import { skipCheckProblems, skipReason, stageSkip, type StageSkip } from './skip.ts';
@@ -82,7 +83,7 @@ import {
 } from './limits.ts';
 import { RuntimeStateStore, runtimeStateFile, type ModelHold, type OperatorHold } from './runtime-state.ts';
 import { buildTeamView, type TeamSubagent, type TeamView } from '../http/team.ts';
-import { buildStageHistory, resultRows, type PersistedResult } from './stage-history.ts';
+import { buildStageHistory, criterionRows, resultRows, type PersistedResult } from './stage-history.ts';
 import { blockedBucketColumns, derivePipeline, type PipelineStage, type StageSession } from './pipeline.ts';
 import { applySubagent, closeSubagents, copyOf, emptySubagents, subagentJson, subagentsJson, type SubagentBoard } from './subagents.ts';
 import { copyToolUsage, countToolUse, emptyToolUsage, integrationJson, integrationUsage, type ToolUsage } from './tool-usage.ts';
@@ -359,6 +360,8 @@ interface IssueMeta {
   subIssues: unknown[];
   /** Branch the tracker links to the issue; null when none. */
   branchName: string | null;
+  /** The checkboxes under the body's criteria headings, read before the description is cut. */
+  criteria: Array<{ text: string; checked: boolean }>;
 }
 
 /** First non-empty line of a description; what command detection and the pipeline need. */
@@ -381,8 +384,9 @@ function firstLine(text: string | null): string | null {
   return text?.split(/\r?\n/).find((line) => line.trim() !== '') ?? null;
 }
 
-function issueMeta(issue: Issue): IssueMeta {
+function issueMeta(issue: Issue, criteriaHeadings: readonly string[] | undefined): IssueMeta {
   return {
+    criteria: uniqueCriteria(parseCriteria(issue.description, criteriaHeadings)).map(({ text, checked }) => ({ text, checked })),
     state: issue.state,
     description: firstLine(issue.description),
     labels: issue.labels,
@@ -948,7 +952,7 @@ export class Orchestrator {
         previous = 'queued';
         const record = this.#record(candidate);
         record.repo ??= this.#repositoryOf(candidate);
-        record.meta = issueMeta(candidate);
+        record.meta = issueMeta(candidate, this.#deps.workflow.current.config.pipeline.criteriaHeadings);
         paused = base(candidate.id, candidate.identifier, candidate.url, candidate.title, candidate.state, null);
       } else {
         return { ok: false, reason: 'not_found' };
@@ -1325,7 +1329,7 @@ export class Orchestrator {
       const strip = (issue: Issue): Issue => ({ ...issue, description: firstLine(issue.description) });
       for (const issue of fetched) {
         const record = this.#claimed.has(issue.id) ? this.#records.get(issue.id) : undefined;
-        if (record !== undefined) record.meta = issueMeta(issue);
+        if (record !== undefined) record.meta = issueMeta(issue, this.#deps.workflow.current.config.pipeline.criteriaHeadings);
       }
       const listed = watchOnly ? fetched.filter((issue) => normalizeStateName(issue.state) !== normalizeStateName(watch.column)) : fetched;
       this.#board = {
@@ -1372,7 +1376,7 @@ export class Orchestrator {
             await this.#recordMerge(issue, adapter.issueRepository?.(issue) ?? 'unknown', 'symphony', result, workspace, adapter);
           }
           const record = this.#record(issue);
-          record.meta = issueMeta(issue);
+          record.meta = issueMeta(issue, this.#deps.workflow.current.config.pipeline.criteriaHeadings);
           this.#trace(record, {
             kind: 'lifecycle',
             event: 'merge_retried',
@@ -1847,7 +1851,7 @@ export class Orchestrator {
   #skipStage(issue: Issue, skip: StageSkip, workflow: EffectiveWorkflow, repo: string, adapter: Required<Pick<TrackerAdapter, 'postComment' | 'setStatus'>>): void {
     const log = this.#issueLogger(issue);
     const record = this.#record(issue);
-    record.meta = issueMeta(issue);
+    record.meta = issueMeta(issue, this.#deps.workflow.current.config.pipeline.criteriaHeadings);
     record.repo = repo;
     this.#claimed.add(issue.id);
     const summary = `Stage ${skip.role} skipped: ${skip.reason}. No session was started; the issue moves on to "${skip.target}".`;
@@ -1941,7 +1945,7 @@ export class Orchestrator {
     adapter: RecoveryAdapter,
   ): void {
     const record = this.#record(issue);
-    record.meta = issueMeta(issue);
+    record.meta = issueMeta(issue, this.#deps.workflow.current.config.pipeline.criteriaHeadings);
     record.repo = adapter.issueRepository?.(issue) ?? 'unknown';
     this.#claimed.add(issue.id);
     const work = (async () => {
@@ -2159,7 +2163,7 @@ export class Orchestrator {
     record.gate = null;
     if (continuation) record.continuations++;
     record.repo = entry.repo;
-    record.meta = issueMeta(issue);
+    record.meta = issueMeta(issue, this.#deps.workflow.current.config.pipeline.criteriaHeadings);
     // A "Model: <model>" label picks the model for this run, else model_by_complexity, else the role's claude.model, else claude.model.
     const { complexity } = classify(issue.labels);
     const choice = chooseRoleModel(issue.labels, role, config.claude.model);
@@ -2429,7 +2433,7 @@ export class Orchestrator {
       // whose move failed is none, so a move that keeps failing ends at max_continuations instead of looping.
       if (entry.resultMoved) finished.continuations = 0;
       // The worker refreshes the issue after each turn: the column it ended in decides what comes next.
-      finished.meta = issueMeta(entry.issue);
+      finished.meta = issueMeta(entry.issue, this.#deps.workflow.current.config.pipeline.criteriaHeadings);
       const session = finished.sessions.find((candidate) => candidate.run === entry.runId);
       if (session !== undefined) {
         session.finishedAt = this.#clock.now();
@@ -3009,6 +3013,7 @@ export class Orchestrator {
       next_seq: record.nextSeq,
       sessions: record.sessions.map((session) => this.#sessionJson(session)),
       results: resultRows(record.results),
+      criteria: criterionRows(record.meta?.criteria ?? [], record.results),
       run_trace: traceJson(record.lastRun),
       last_check: checkJson(record.lastCheck),
       ...this.#roundsOf(record.meta?.labels ?? [], record.results),
@@ -3107,7 +3112,7 @@ export class Orchestrator {
     const repo = this.#repositoryOf(issue);
     const record = this.#record(issue);
     record.repo ??= repo;
-    record.meta = issueMeta(issue);
+    record.meta = issueMeta(issue, this.#deps.workflow.current.config.pipeline.criteriaHeadings);
     this.#cancelRetry(issue.id);
     this.#paused.set(issue.id, {
       issueId: issue.id,
@@ -3212,7 +3217,7 @@ export class Orchestrator {
     const byId = new Map(refreshed.map((issue) => [issue.id, issue]));
     for (const [id, issue] of byId) {
       const record = this.#records.get(id);
-      if (record !== undefined) record.meta = issueMeta(issue);
+      if (record !== undefined) record.meta = issueMeta(issue, this.#deps.workflow.current.config.pipeline.criteriaHeadings);
     }
     for (const id of ids) {
       const entry = this.#running.get(id);
@@ -4211,7 +4216,7 @@ export class Orchestrator {
     const record = this.#records.get(issueId);
     const identifier = entry?.identifier ?? retry?.identifier ?? record?.identifier ?? key;
     const pricing = this.#deps.pricing?.current();
-    const meta = entry !== undefined ? issueMeta(entry.issue) : (record?.meta ?? null);
+    const meta = entry !== undefined ? issueMeta(entry.issue, this.#deps.workflow.current.config.pipeline.criteriaHeadings) : (record?.meta ?? null);
     const state = entry?.issue.state ?? paused?.state ?? meta?.state ?? record?.sessions.at(-1)?.state ?? '';
     return {
       issue_identifier: identifier,
@@ -4227,6 +4232,7 @@ export class Orchestrator {
       pull_request: this.#pullRequestOf(identifier),
       pipeline: this.#pipelineFor({ state, description: meta?.description ?? null, labels: meta?.labels }, issueId, this.#deps.workflow.current),
       results: resultRows(record?.results ?? []),
+      criteria: criterionRows(meta?.criteria ?? [], record?.results ?? []),
       workspace: { path: entry?.workspacePath ?? record?.workspacePath ?? null },
       attempts: {
         runs: record?.runs ?? 0,
@@ -4286,6 +4292,7 @@ export class Orchestrator {
       pull_request: this.#pullRequestOf(archived.issue_identifier),
       pipeline: archived.pipeline ?? [],
       results: archived.results,
+      criteria: archived.criteria ?? [],
       workspace: { path: archived.workspace_path },
       attempts: {
         runs: archived.runs,

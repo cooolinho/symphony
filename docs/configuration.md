@@ -1181,6 +1181,8 @@ like everywhere else (an unset variable counts as omitted). Unknown keys are ign
 | `max_security_rounds` | `2` | Integer >= 1. Security review rounds (`issues_found` → developer fixes) before the issue goes to a human. |
 | `max_check_failures` | `3` | Integer >= 1. Hand-offs per issue that went to a role's `on_check_failed` (the entry check of the column failed) before the issue goes to a human. |
 | `limit_label` | `needs-human` | Label for an issue that hit a round limit or `max_check_failures`. |
+| `criteria_headings` | `["Acceptance criteria", "Akzeptanzkriterien"]` | Headings of an issue body (any level, case-insensitive) whose checkbox lines are its [acceptance criteria](results.md#acceptance-criteria). |
+| `tick_criteria` | `true` | Symphony appends the analysis's added criteria to the issue body and ticks the boxes after each review. `false` never edits an issue body. |
 | `type_labels` | `{}` | Map of issue label → change type, e.g. `{ bug: bug, enhancement: feature }` (labels are matched case-insensitively). |
 | `default_type` | `feature` | Type of an issue without a label in `type_labels`. |
 | `analysis` | `always` | `always` or `when_unlabeled`. With `when_unlabeled`, the analysis stage (the role whose `result` is `analysis`) is [skipped without a session](#skipping-stages-without-a-session) for issues that already carry a `Type:` and a `Complexity:` label. Needs a role with `result: analysis`. |

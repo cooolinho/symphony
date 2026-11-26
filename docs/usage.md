@@ -75,6 +75,17 @@ continues in the same workspace and reads your comments. Move an issue out of `B
 problem is resolved. The optional [Blocked watchdog](watchdog.md) does this for you where it can: it diagnoses every
 blocked issue from the logs, comments, and moves it back or adds `needs-human`.
 
+### Acceptance criteria
+
+The checkboxes under `## Acceptance criteria` (or `## Akzeptanzkriterien`) are the issue's acceptance criteria. The
+analyst's new or sharpened ones are appended to the body in a block of their own. In "Agent review" the reviewer proves
+each one, where possible by running a test or command or taking a screenshot, and Symphony ticks the proven boxes, with
+a short note and a link to the review. This happens in every round, so you see the progress after `changes_needed` too,
+and a box is unticked when a later round finds it broken. The reviewer cannot approve while a criterion is unmet. A
+criterion only a human can check (production, a real device, a third-party system) is marked `👤 manuell prüfen`, does
+not block the approval, and its box is yours to tick. The dashboard's issue page shows the same list. Details:
+[results.md](results.md#acceptance-criteria).
+
 ### Bug issues: the bugfix profile
 
 An issue of type `bugfix` (label `Type: bugfix`, or `bug`; the analyst sets it when the issue has no type) follows the

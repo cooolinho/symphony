@@ -183,6 +183,17 @@ export class FakeTracker implements TrackerAdapter {
     return { url };
   }
 
+  /** Issue bodies written by `updateIssueBody`, in order. */
+  bodyUpdates: string[] = [];
+  /** Set to make `updateIssueBody` fail. */
+  failBodyUpdate: Error | null = null;
+
+  async updateIssueBody(issue: Issue, body: string): Promise<void> {
+    if (this.failBodyUpdate !== null) throw this.failBodyUpdate;
+    this.bodyUpdates.push(body);
+    this.set(issue.id, { description: body });
+  }
+
   /** Moves the session's issue in memory, like the GitHub adapter does on the board. */
   async setStatus(issue: Issue, column: string): Promise<StatusChange> {
     const previous = this.issues.get(issue.id)?.state ?? issue.state;

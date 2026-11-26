@@ -3,6 +3,7 @@ import { normalizeStateName } from '../workflow/config.ts';
 import type { IssueComment } from '../tracker/types.ts';
 import type { ResultMeta, StageResult } from '../workflow/results.ts';
 import { isWatchdogResume } from '../watchdog/marker.ts';
+import { criterionKey, parseCriteria, uniqueCriteria, type CriterionStatus, type CriterionVerdict } from '../workflow/criteria.ts';
 
 /** A persisted stage result with its meta, as read back from an issue comment marker. */
 export interface PersistedResult {
@@ -222,6 +223,69 @@ function newest(history: Pick<StageHistory, 'results'>, kind: string): Persisted
 export function refactoringGoals(history: Partial<Pick<StageHistory, 'results'>>): string[] {
   const entry = history.results === undefined ? undefined : newest({ results: history.results }, 'analysis');
   return entry?.result.kind === 'analysis' ? entry.result.refactoring_goals : [];
+}
+
+/**
+ * The issue's acceptance criteria: the checkboxes in its body (see `parseCriteria`), else the list of the newest
+ * analysis, unticked. Repeated texts count once.
+ */
+export function issueCriteria(
+  description: string | null,
+  history: Partial<Pick<StageHistory, 'results'>>,
+  headings?: readonly string[],
+): { text: string; checked: boolean }[] {
+  const stated = uniqueCriteria(parseCriteria(description, headings));
+  if (stated.length > 0) return stated.map(({ text, checked }) => ({ text, checked }));
+  const entry = history.results === undefined ? undefined : newest({ results: history.results }, 'analysis');
+  const analysed = entry?.result.kind === 'analysis' ? entry.result.acceptance_criteria : [];
+  return uniqueCriteria(analysed.map((text) => ({ text, checked: false })));
+}
+
+/** One acceptance criterion as the dashboard shows it; `open` = no review has judged it yet. */
+export interface CriterionRow {
+  text: string;
+  /** The box in the issue body as last read; after a `met` or `unmet` verdict what that verdict makes of it. */
+  checked: boolean;
+  status: CriterionStatus | 'open';
+  /** Round of the judging review; null without one. */
+  round: number | null;
+  /** The evidence of a `met` verdict, else the reason. */
+  note: string | null;
+}
+
+/**
+ * The issue's criteria with the verdicts of the newest review since the last `reset` that judged any: `listed` (the
+ * checkboxes of the body), else the analysis's list, plus criteria only that review names (the body was read before
+ * Symphony appended them).
+ */
+export function criterionRows(listed: readonly { text: string; checked: boolean }[], results: readonly PersistedResult[]): CriterionRow[] {
+  const history = buildStageHistory(results);
+  let verdicts: readonly CriterionVerdict[] = [];
+  let round: number | null = null;
+  for (let i = history.results.length - 1; i >= 0; i--) {
+    const { result, meta } = history.results[i] as PersistedResult;
+    if (result.kind === 'reset') break;
+    if (result.kind === 'review' && (result.criteria?.length ?? 0) > 0) {
+      verdicts = result.criteria;
+      round = meta.round;
+      break;
+    }
+  }
+  const byKey = new Map(verdicts.map((verdict) => [criterionKey(verdict.criterion), verdict]));
+  const base = listed.length > 0 ? listed : issueCriteria(null, history);
+  const all = uniqueCriteria([...base, ...verdicts.map((verdict) => ({ text: verdict.criterion, checked: false }))]);
+  return all.map(({ text, checked }) => {
+    const verdict = byKey.get(criterionKey(text));
+    if (verdict === undefined) return { text, checked, status: 'open', round: null, note: null };
+    const note = verdict.status === 'met' ? verdict.evidence : (verdict.reason ?? verdict.evidence);
+    return {
+      text,
+      checked: verdict.status === 'manual' ? checked : verdict.status === 'met',
+      status: verdict.status,
+      round,
+      note: note === undefined ? null : truncate(note, PROMPT_SUMMARY_LIMIT),
+    };
+  });
 }
 
 /** The prompt view of a stage history (the `results` variable). */

@@ -47,6 +47,7 @@ import {
 } from './normalize.ts';
 import {
   ADD_COMMENT_MUTATION,
+  UPDATE_ISSUE_BODY_MUTATION,
   ADD_LABELS_MUTATION,
   BRANCH_PULL_REQUEST_QUERY,
   CLOSE_ISSUE_MUTATION,
@@ -359,6 +360,12 @@ export class GithubProjectAdapter implements TrackerAdapter {
     assertNoGraphqlErrors(response.errors);
     const url = obj(obj(obj(obj(response.data)?.addComment)?.commentEdge)?.node)?.url;
     return { url: typeof url === 'string' ? url : null };
+  }
+
+  async updateIssueBody(issue: Issue, body: string): Promise<void> {
+    const ref = this.#requireRef(issue, 'edit');
+    const response = await this.client.request<Json>(UPDATE_ISSUE_BODY_MUTATION, { issueId: ref.issueId, body });
+    assertNoGraphqlErrors(response.errors);
   }
 
   /**
