@@ -83,7 +83,7 @@ describe('alert cards', () => {
 
   it('has the border and label colours of the issue in the CSS', () => {
     const css = ALERTS_CSS.replace(/\s+/g, '');
-    for (const v of ['rgba(248,113,113,0.4)', 'rgba(251,191,36,0.35)', '#fca5a5', '#fcd34d', 'rgba(248,113,113,0.2)', '#fecaca', 'padding:12px14px', 'flex:11340px']) {
+    for (const v of ['rgba(248,113,113,0.4)', 'rgba(251,191,36,0.35)', '#fca5a5', '#fcd34d', 'rgba(248,113,113,0.2)', '#fecaca', 'padding:12px14px']) {
       assert.ok(css.includes(v), v);
     }
   });
@@ -109,12 +109,11 @@ describe('alerts badge and empty state', () => {
 });
 
 describe('alerts and budget on the page', () => {
-  it('sit in one wrapping row; the alerts panel grows from 340 px', () => {
+  it('are direct children of the masonry container, alerts right behind the budget, without own margin', () => {
     const page = renderPage(DASHBOARD_HTML, dashboardState());
-    const row = page.query('.ov-row')[0]!;
-    assert.deepEqual([...row.children].map((c) => c.id), ['alerts', 'budget']);
-    assert.match(DASHBOARD_HTML, /\.ov-row \{[^}]*flex-wrap: wrap/);
-    assert.match(DASHBOARD_HTML, /#alerts \{ flex: 1 1 340px/);
+    const ids = [...page.$('ov-masonry').children].map((c) => c.id);
+    assert.equal(ids.indexOf('alerts'), ids.indexOf('budget') + 1);
+    assert.match(DASHBOARD_HTML, /#alerts \{ min-width: 0; \}/);
     assert.equal(page.$('alerts-title').textContent, 'Alerts');
   });
 

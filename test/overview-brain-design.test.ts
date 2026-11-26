@@ -383,7 +383,7 @@ describe('Brain-Zugriffe: Chips, Suche, Zeilen', () => {
 });
 
 describe('ohne Brain: beide Panels fehlen', () => {
-  const hidden = (s: ReturnType<typeof setup>) => ['brain-row', 'brain-panel', 'brain-access'].every((id) => s.$(id).hidden);
+  const hidden = (s: ReturnType<typeof setup>) => ['brain-panel', 'brain-access'].every((id) => s.$(id).hidden);
   it('404 only on vitals hides both panels although access answers', async () => {
     const s = setup({}, (u) => (u.startsWith('/api/v1/brain/vitals') ? { ok: false, status: 404, body: { error: { code: 'brain_disabled' } } } : undefined));
     await run(s.ctx, 'loadBrain()');
@@ -410,6 +410,6 @@ describe('ohne Brain: beide Panels fehlen', () => {
     assert.ok(hidden(s));
     on = true;
     await run(s.ctx, 'loadBrain()');
-    assert.ok(['brain-row', 'brain-panel', 'brain-access'].every((id) => !s.$(id).hidden));
+    assert.ok(['brain-panel', 'brain-access'].every((id) => !s.$(id).hidden));
   });
 });

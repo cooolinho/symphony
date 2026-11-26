@@ -13,7 +13,7 @@ import { SCALES, rgba } from './ui/palette.ts';
  * generated_at. Entries without a time come last.
  */
 export const ALERTS_CSS = `
-  #alerts { flex: 1 1 340px; min-width: 0; margin: 0; }
+  #alerts { min-width: 0; }
   #alerts .section-head { align-items: center; }
   #alerts .section-head h2 { display: flex; align-items: center; gap: 10px; }
   .alerts-badge { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: ${rgba(SCALES.red[400], 0.2)};

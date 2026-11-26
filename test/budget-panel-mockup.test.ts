@@ -51,13 +51,12 @@ describe('E4-6 panel structure', () => {
     const panel = page.$('budget');
     assert.match(panel.className, /\bg\b/);
     assert.equal(panel.hidden, false);
-    assert.equal(panel.parentElement?.className, 'ov-row');
-    assert.equal(page.$('alerts').parentElement?.className, 'ov-row');
+    assert.equal(panel.parentElement?.id, 'ov-masonry');
+    assert.equal(page.$('alerts').parentElement?.id, 'ov-masonry');
     assert.match(page.$('budget-title').className, /\blbl\b/);
     assert.equal(text(page.$('budget-title')), 'Context-Budget · heute');
     const more = panel.querySelectorAll('a').find((a) => text(a) === 'Verlauf →');
     assert.equal(more?.getAttribute('href'), '/stats');
-    assert.ok(DASHBOARD_HTML.includes('flex: 1 1 340px'));
     assert.ok(DASHBOARD_HTML.includes('flex-direction: column; gap: 14px'));
     assert.ok(DASHBOARD_HTML.includes('84px minmax(0, 1fr) 44px 52px'));
   });

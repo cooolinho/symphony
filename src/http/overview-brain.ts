@@ -9,8 +9,6 @@ import { BRAIN_ACCESS_CSS, BRAIN_ACCESS_JS, brainAccessControlsHtml } from './br
 import { SCALES } from './ui/palette.ts';
 
 export const BRAIN_CSS = `
-  .brain-row > section { flex: 1 1 340px; min-width: 0; }
-  .brain-row > .brain-access { flex-grow: 2; }
   .brain-head-action { display: inline-flex; }
   .brain-tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .brain-foot { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 12px 0 0; font: 12px var(--mono); color: var(--fg-3, var(--muted)); }
@@ -21,7 +19,6 @@ export const BRAIN_CSS = `
 `;
 
 export const BRAIN_PANELS_HTML = `
-  <div class="ov-row brain-row" id="brain-row" hidden>
     <section class="panel brain-panel" id="brain-panel" aria-labelledby="brain-title" hidden>
       <div class="section-head">
         <h2 class="lbl" id="brain-title">Brain-Vitals</h2>
@@ -37,7 +34,6 @@ export const BRAIN_PANELS_HTML = `
       </div>
       ${brainAccessControlsHtml({ roles: 'brain-roles', input: 'brain-q', list: 'brain-access-list' })}
     </section>
-  </div>
 `;
 
 export const BRAIN_JS = BRAIN_ACCESS_JS + `
@@ -106,7 +102,9 @@ export const BRAIN_JS = BRAIN_ACCESS_JS + `
   }
 
   function brainShow(on) {
-    for (const id of ['brain-row', 'brain-panel', 'brain-access']) document.getElementById(id).hidden = !on;
+    for (const id of ['brain-panel', 'brain-access']) document.getElementById(id).hidden = !on;
+    // Optional hook of the host page (masonry layout): the cards changed visibility.
+    if (typeof brainOnVisibility === 'function') brainOnVisibility();
   }
 
   async function loadBrain() {

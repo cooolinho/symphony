@@ -2243,3 +2243,67 @@ describe('E0-8 subagents per stage, also after the run', () => {
     assert.ok(!(none.$('stage-subs-body').textContent ?? '').includes('Keine Session aktiv'));
   });
 });
+
+describe('overview masonry (E3-1)', () => {
+  const CARDS = ['teams-section', 'running-section', 'budget', 'alerts', 'system-panel', 'stats', 'tool-activity', 'brain-panel', 'brain-access', 'activity-section'];
+  const open = async () => {
+    const { renderPage } = await import('./helpers.ts');
+    return renderPage(DASHBOARD_HTML, dashboardState());
+  };
+
+  it('has one masonry container whose direct children are the cards in reading order', async () => {
+    const page = await open();
+    const box = page.$('ov-masonry');
+    assert.equal(box.tagName, 'div');
+    assert.ok(box.classList.contains('masonry'));
+    assert.equal(DASHBOARD_HTML.split('class="masonry"').length - 1, 1);
+    assert.deepEqual([...box.children].map((c) => c.id), CARDS);
+  });
+
+  it('dissolves .ov-row, .brain-row and .lower', async () => {
+    assert.doesNotMatch(DASHBOARD_HTML, /ov-row|brain-row|class="lower"|\.lower \{/);
+    assert.deepEqual((await open()).query('.ov-row, .brain-row, .lower'), []);
+  });
+
+  it('makes every card a section labelled by an h2 inside it', async () => {
+    const page = await open();
+    for (const card of page.$('ov-masonry').children) {
+      assert.equal(card.tagName, 'section', card.id);
+      const label = page.$(card.getAttribute('aria-labelledby') ?? '');
+      assert.equal(label.tagName, 'h2', card.id);
+      assert.ok(card.contains(label), card.id);
+    }
+  });
+
+  it('turns #stats into a section "Kennzahlen · seit Start" that still renders its tiles', async () => {
+    const page = await open();
+    assert.equal(page.$('stats').tagName, 'section');
+    assert.equal(page.$('stats-title').textContent, 'Kennzahlen · seit Start');
+    assert.ok(page.$('stats-tiles').children.length > 0);
+  });
+
+  it('gives .wide only to Teams live and Agent-Aktivität', async () => {
+    const page = await open();
+    assert.deepEqual([...page.$('ov-masonry').children].filter((c) => c.classList.contains('wide')).map((c) => c.id), ['teams-section', 'tool-activity']);
+  });
+
+  it('inlines the masonry CSS and script and mounts after the first render', async () => {
+    const { MASONRY_CSS } = await import('../src/http/ui/masonry.ts');
+    assert.ok(DASHBOARD_HTML.includes(MASONRY_CSS));
+    assert.match(DASHBOARD_HTML, /masonryMount\(container\)/);
+    const page = await open();
+    assert.ok(page.$('ov-masonry').classList.contains('masonry-on'));
+  });
+
+  it('shows empty states as one line inside the card', async () => {
+    const page = await open();
+    assert.ok(['p'].includes(page.$('issues-empty').tagName));
+    assert.doesNotMatch(DASHBOARD_HTML, /class="cursor"|\.agents-empty \{[^}]*(border|dashed)/);
+  });
+
+  it('keeps the global reduced-motion rule and adds no transitions in the masonry CSS', async () => {
+    const { MASONRY_CSS } = await import('../src/http/ui/masonry.ts');
+    assert.match(DASHBOARD_HTML, /prefers-reduced-motion: reduce[\s\S]*?animation: none !important; transition: none !important/);
+    assert.doesNotMatch(MASONRY_CSS, /transition|animation/);
+  });
+});
